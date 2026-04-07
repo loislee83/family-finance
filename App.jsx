@@ -1,0 +1,1479 @@
+import { useState, useEffect, useCallback, useRef } from "react";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// ─── Firebase Config ──────────────────────────────────────────────────────────
+// 👇 Replace this with YOUR Firebase config (see setup guide)
+const FIREBASE_CONFIG = {
+  apiKey: "PASTE_YOUR_apiKey_HERE",
+  authDomain: "PASTE_YOUR_authDomain_HERE",
+  projectId: "PASTE_YOUR_projectId_HERE",
+  storageBucket: "PASTE_YOUR_storageBucket_HERE",
+  messagingSenderId: "PASTE_YOUR_messagingSenderId_HERE",
+  appId: "PASTE_YOUR_appId_HERE",
+};
+const FAMILY_DOC_ID = "lois-lisa"; // unique ID for your family data
+
+let db = null;
+try {
+  const app = initializeApp(FIREBASE_CONFIG);
+  db = getFirestore(app);
+} catch (e) {
+  console.warn("Firebase init failed, using localStorage fallback", e);
+}
+
+// ─── Storage Hook (Firebase + localStorage fallback) ──────────────────────────
+// Reads from Firebase on mount, syncs writes to Firebase and localStorage.
+// If Firebase is not configured, falls back to localStorage only.
+function useStorage(key, def) {
+  const [val, setVal] = useState(() => {
+    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : def; } catch { return def; }
+  });
+  const [synced, setSynced] = useState(false);
+
+  // Subscribe to Firebase realtime updates
+  useEffect(() => {
+    if (!db || !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey.startsWith("PASTE")) return;
+    const ref = doc(db, "family", FAMILY_DOC_ID);
+    const unsub = onSnapshot(ref, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data[key] !== undefined) {
+          const parsed = typeof data[key] === "string" ? JSON.parse(data[key]) : data[key];
+          setVal(parsed);
+          try { localStorage.setItem(key, JSON.stringify(parsed)); } catch {}
+        }
+      }
+      setSynced(true);
+    }, (err) => {
+      console.warn("Firebase read error", err);
+      setSynced(true);
+    });
+    return unsub;
+  }, [key]);
+
+  const save = useCallback((v) => {
+    const next = typeof v === "function" ? v(val) : v;
+    setVal(next);
+    // Always save to localStorage as backup
+    try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+    // Save to Firebase if configured
+    if (db && FIREBASE_CONFIG.apiKey && !FIREBASE_CONFIG.apiKey.startsWith("PASTE")) {
+      const ref = doc(db, "family", FAMILY_DOC_ID);
+      setDoc(ref, { [key]: JSON.stringify(next) }, { merge: true })
+        .catch(e => console.warn("Firebase write error", e));
+    }
+  }, [key, val]);
+
+  return [val, save];
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const C = {
+  bg: "#090b10",
+  surface: "#0e1118",
+  card: "#12151f",
+  border: "#1c2030",
+  borderLight: "#252a3a",
+  p1: "#34d399",   // emerald
+  p2: "#818cf8",   // indigo
+  gold: "#fbbf24",
+  red: "#f87171",
+  text: "#e2e8f0",
+  dim: "#64748b",
+  dimmer: "#334155",
+};
+
+const fmt = (n, d = 0) => n == null || isNaN(n) ? "—" : Number(n).toLocaleString("zh-TW", { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmtUSD = (n) => n == null || isNaN(n) ? "—" : "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pct = (n) => { if (n == null) return "—"; return (n > 0 ? "+" : "") + Number(n).toFixed(2) + "%"; };
+const now = () => new Date().toISOString().slice(0, 7);
+
+// ─── Yahoo Finance price fetcher via allorigins proxy ─────────────────────────
+async function fetchPrice(ticker, market) {
+  // market: "TW" | "US"
+  const symbol = market === "TW" ? ticker + ".TW" : ticker;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+  const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+  try {
+    const res = await fetch(proxy, { signal: AbortSignal.timeout(8000) });
+    const json = await res.json();
+    const data = JSON.parse(json.contents);
+    const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+    const prev  = data?.chart?.result?.[0]?.meta?.chartPreviousClose;
+    const currency = data?.chart?.result?.[0]?.meta?.currency;
+    if (!price) return null;
+    return { price, prev, change: prev ? ((price - prev) / prev) * 100 : null, currency };
+  } catch { return null; }
+}
+
+// ─── Primitive UI ─────────────────────────────────────────────────────────────
+const Inp = ({ value, onChange, placeholder, type = "text", style = {}, small }) => (
+  <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+    style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, color: C.text,
+      padding: small ? "5px 9px" : "8px 12px", fontSize: small ? 12 : 13, outline: "none", width: "100%", ...style }} />
+);
+
+const Sel = ({ value, onChange, options, style = {} }) => (
+  <select value={value} onChange={e => onChange(e.target.value)}
+    style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, color: C.text,
+      padding: "8px 10px", fontSize: 13, outline: "none", cursor: "pointer", ...style }}>
+    {options.map(o => <option key={o.v ?? o} value={o.v ?? o}>{o.l ?? o}</option>)}
+  </select>
+);
+
+const Btn = ({ children, onClick, color = C.p1, small, full, disabled, style = {} }) => (
+  <button onClick={onClick} disabled={disabled}
+    style={{ background: color + "18", border: `1px solid ${color}40`, borderRadius: 6, color: disabled ? C.dim : color,
+      padding: small ? "4px 9px" : "8px 16px", fontSize: small ? 11 : 13, fontWeight: 600,
+      cursor: disabled ? "default" : "pointer", width: full ? "100%" : undefined, opacity: disabled ? 0.6 : 1, ...style }}>
+    {children}
+  </button>
+);
+
+const Tag = ({ children, color }) => (
+  <span style={{ background: color + "18", color, border: `1px solid ${color}30`, borderRadius: 4,
+    padding: "2px 7px", fontSize: 11, fontWeight: 600 }}>{children}</span>
+);
+
+const Divider = () => <div style={{ height: 1, background: C.border, margin: "12px 0" }} />;
+
+function Card({ children, accent, style = {} }) {
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14,
+      overflow: "hidden", position: "relative", ...style }}>
+      {accent && <div style={{ height: 3, background: `linear-gradient(90deg, ${accent}, ${accent}00)` }} />}
+      <div style={{ padding: "20px 22px" }}>{children}</div>
+    </div>
+  );
+}
+
+// ─── Stock Panel ──────────────────────────────────────────────────────────────
+function StockPanel({ name, color, stocks, setStocks, trades, setTrades }) {
+  const [ticker, setTicker] = useState("");
+  const [sname, setSname] = useState("");
+  const [market, setMarket] = useState("TW");
+  const [shares, setShares] = useState("");
+  const [price, setPrice] = useState("");
+  const [ttype, setTtype] = useState("buy");
+  const [tdate, setTdate] = useState(new Date().toISOString().slice(0, 10));
+  const [fetching, setFetching] = useState({});
+  const [showTrades, setShowTrades] = useState(false);
+  const [usdTwd, setUsdTwd] = useState(null);
+
+  // Fetch USD/TWD rate once
+  useEffect(() => {
+    (async () => {
+      const r = await fetchPrice("USDTWD=X", "US");
+      if (r?.price) setUsdTwd(r.price);
+    })();
+  }, []);
+
+  const refreshPrice = async (s) => {
+    setFetching(f => ({ ...f, [s.id]: true }));
+    const r = await fetchPrice(s.ticker, s.market);
+    if (r) {
+      setStocks(prev => prev.map(x => x.id === s.id ? { ...x, livePrice: r.price, livePrev: r.prev, liveChange: r.change, liveTs: Date.now() } : x));
+    }
+    setFetching(f => ({ ...f, [s.id]: false }));
+  };
+
+  const refreshAll = async () => {
+    for (const s of stocks) await refreshPrice(s);
+  };
+
+  const addTrade = () => {
+    if (!ticker || !shares || !price) return;
+    const id = Date.now();
+    const trade = { id, ticker: ticker.toUpperCase(), name: sname || ticker.toUpperCase(), market, shares: +shares, price: +price, type: ttype, date: tdate };
+
+    // Upsert into stock holdings
+    setStocks(prev => {
+      const existing = prev.find(s => s.ticker === trade.ticker && s.market === trade.market);
+      if (!existing) {
+        if (ttype === "sell") return prev; // can't sell what you don't have
+        return [...prev, { id, ticker: trade.ticker, name: trade.name, market, shares: +shares, avgCost: +price, livePrice: null, liveChange: null }];
+      }
+      // Recalculate avgCost & shares
+      const newShares = ttype === "buy"
+        ? existing.shares + +shares
+        : Math.max(0, existing.shares - +shares);
+      const newAvg = ttype === "buy"
+        ? (existing.avgCost * existing.shares + +price * +shares) / (existing.shares + +shares)
+        : existing.avgCost;
+      return prev.map(s => s.ticker === trade.ticker && s.market === trade.market
+        ? { ...s, shares: newShares, avgCost: newAvg }
+        : s
+      ).filter(s => s.shares > 0);
+    });
+
+    setTrades(prev => [trade, ...prev]);
+    setTicker(""); setSname(""); setShares(""); setPrice("");
+  };
+
+  // Compute market value in TWD
+  const stockMV = (s) => {
+    const p = s.livePrice || s.avgCost;
+    const mv = p * s.shares;
+    if (s.market === "US") return usdTwd ? mv * usdTwd : mv * 32; // fallback rate
+    return mv;
+  };
+
+  const totalTWD = stocks.reduce((sum, s) => sum + stockMV(s), 0);
+  const totalCost = stocks.reduce((sum, s) => {
+    const cost = s.avgCost * s.shares;
+    return sum + (s.market === "US" ? cost * (usdTwd || 32) : cost);
+  }, 0);
+  const totalPnL = totalTWD - totalCost;
+
+  const myTrades = trades.filter(t => stocks.some(s => s.ticker === t.ticker && s.market === t.market));
+
+  return (
+    <Card accent={color}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: 1, textTransform: "uppercase", marginBottom: 3 }}>股票資產</div>
+          <div style={{ fontSize: 16, fontWeight: 800, color }}>📈 {name}</div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 24, fontWeight: 800, color: C.text }}>NT$ {fmt(totalTWD)}</div>
+          <div style={{ fontSize: 12, color: totalPnL >= 0 ? C.p1 : C.red, marginTop: 2 }}>
+            損益 {totalPnL >= 0 ? "+" : ""}{fmt(totalPnL)} ({pct(totalCost ? (totalPnL / totalCost) * 100 : 0)})
+          </div>
+          {usdTwd && <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>USD/TWD ≈ {usdTwd.toFixed(2)}</div>}
+        </div>
+      </div>
+
+      {/* Holdings table */}
+      {stocks.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 70px 80px 80px 80px 70px 60px", gap: 6,
+            fontSize: 10, color: C.dim, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase",
+            paddingBottom: 6, borderBottom: `1px solid ${C.border}` }}>
+            <div />
+            <div>股票</div><div style={{ textAlign: "right" }}>股數</div>
+            <div style={{ textAlign: "right" }}>均價</div><div style={{ textAlign: "right" }}>現價</div>
+            <div style={{ textAlign: "right" }}>漲跌</div><div style={{ textAlign: "right" }}>市值(TWD)</div><div />
+          </div>
+          {stocks.map(s => {
+            const live = s.livePrice;
+            const pnlPct = live && s.avgCost ? ((live - s.avgCost) / s.avgCost) * 100 : null;
+            const mv = stockMV(s);
+            const tsAge = s.liveTs ? Math.round((Date.now() - s.liveTs) / 60000) : null;
+            return (
+              <div key={s.id} style={{ display: "grid", gridTemplateColumns: "auto 1fr 70px 80px 80px 80px 70px 60px",
+                gap: 6, alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
+                <Tag color={s.market === "TW" ? C.p1 : C.gold}>{s.market}</Tag>
+                <div>
+                  <div style={{ fontWeight: 700, color: C.text }}>{s.name}</div>
+                  <div style={{ color: C.dim, fontSize: 10 }}>{s.ticker}</div>
+                </div>
+                <div style={{ textAlign: "right", color: C.dim }}>{fmt(s.shares, 0)}</div>
+                <div style={{ textAlign: "right", color: C.dim }}>
+                  {s.market === "US" ? fmtUSD(s.avgCost) : fmt(s.avgCost, 2)}
+                </div>
+                <div style={{ textAlign: "right", color: live ? C.text : C.dimmer }}>
+                  {live ? (s.market === "US" ? fmtUSD(live) : fmt(live, 2)) : <span style={{ fontSize: 10 }}>—</span>}
+                  {tsAge !== null && <div style={{ fontSize: 9, color: C.dimmer }}>{tsAge}分前</div>}
+                </div>
+                <div style={{ textAlign: "right", color: s.liveChange == null ? C.dimmer : s.liveChange >= 0 ? C.p1 : C.red }}>
+                  {s.liveChange != null ? pct(s.liveChange) : "—"}
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ color: C.text, fontWeight: 600 }}>{fmt(mv)}</div>
+                  {pnlPct != null && <div style={{ fontSize: 10, color: pnlPct >= 0 ? C.p1 : C.red }}>{pct(pnlPct)}</div>}
+                </div>
+                <Btn small color={fetching[s.id] ? C.dim : color} onClick={() => refreshPrice(s)} disabled={fetching[s.id]}>
+                  {fetching[s.id] ? "…" : "更新"}
+                </Btn>
+              </div>
+            );
+          })}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 6 }}>
+            <Btn small color={color} onClick={refreshAll}>↻ 全部更新</Btn>
+          </div>
+        </div>
+      )}
+
+      {stocks.length === 0 && <div style={{ color: C.dim, fontSize: 13, padding: "12px 0" }}>尚無持股</div>}
+
+      {/* Add trade form */}
+      <Divider />
+      <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", marginBottom: 8 }}>
+        記錄交易
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "70px 90px 1fr 80px 90px 80px auto", gap: 7 }}>
+        <Sel value={market} onChange={setMarket} options={[{ v: "TW", l: "台股" }, { v: "US", l: "美股" }]} />
+        <Inp value={ticker} onChange={setTicker} placeholder="代碼" />
+        <Inp value={sname} onChange={setSname} placeholder="名稱（可空白）" />
+        <Inp value={shares} onChange={setShares} placeholder="股數" type="number" />
+        <Inp value={price} onChange={setPrice} placeholder={market === "US" ? "價格 $" : "價格 NT$"} type="number" />
+        <Sel value={ttype} onChange={setTtype} options={[{ v: "buy", l: "買入" }, { v: "sell", l: "賣出" }]} />
+        <Btn onClick={addTrade} color={ttype === "buy" ? C.p1 : C.red}>記錄</Btn>
+      </div>
+      <div style={{ marginTop: 6 }}>
+        <Inp value={tdate} onChange={setTdate} type="date" style={{ width: 140 }} />
+      </div>
+
+      {/* Trade history toggle */}
+      {myTrades.length > 0 && (
+        <>
+          <Btn small color={C.dim} onClick={() => setShowTrades(v => !v)} style={{ marginTop: 10 }}>
+            {showTrades ? "▲ 收起" : `▼ 交易紀錄 (${myTrades.length})`}
+          </Btn>
+          {showTrades && (
+            <div style={{ marginTop: 8, maxHeight: 200, overflowY: "auto" }}>
+              {myTrades.map(t => (
+                <div key={t.id} style={{ display: "grid", gridTemplateColumns: "90px auto 1fr 70px 80px 36px",
+                  gap: 8, alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
+                  <span style={{ color: C.dim }}>{t.date}</span>
+                  <Tag color={t.type === "buy" ? C.p1 : C.red}>{t.type === "buy" ? "買入" : "賣出"}</Tag>
+                  <span style={{ color: C.text, fontWeight: 600 }}>{t.name} <span style={{ color: C.dim }}>({t.ticker})</span></span>
+                  <span style={{ textAlign: "right", color: C.dim }}>{fmt(t.shares)} 股</span>
+                  <span style={{ textAlign: "right", color: C.text }}>{t.market === "US" ? fmtUSD(t.price) : fmt(t.price, 2)}</span>
+                  <Btn small color={C.red} onClick={() => setTrades(prev => prev.filter(x => x.id !== t.id))}>✕</Btn>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
+// ─── Assets Panel ─────────────────────────────────────────────────────────────
+function AssetsPanel({ name, color, assets, setAssets, usdRate = 32 }) {
+  const [showForm, setShowForm] = useState(false);
+  const [aname, setAname] = useState("");
+  const [atype, setAtype] = useState("房產");
+  const [acurrency, setAcurrency] = useState("TWD");
+  const [aval, setAval] = useState("");       // TWD value OR TWD cash
+  const [ausd, setAusd] = useState("");       // USD cash amount
+  const [anote, setAnote] = useState("");
+  const types = ["房產", "現金", "基金", "保險", "退休金", "其他"];
+
+  // compute TWD value of an asset
+  const twdVal = (a) => {
+    if (a.currency === "USD") return (a.usdAmount || 0) * usdRate;
+    return a.value || 0;
+  };
+
+  const total = assets.reduce((s, a) => s + twdVal(a), 0);
+
+  const add = () => {
+    if (!aname) return;
+    if (atype === "現金") {
+      // allow multiple currency entries; require at least one amount
+      const hasTWD = aval && +aval > 0;
+      const hasUSD = ausd && +ausd > 0;
+      if (!hasTWD && !hasUSD) return;
+      const newAssets = [...assets];
+      if (hasTWD) newAssets.push({ id: Date.now(), name: aname + "（台幣）", type: "現金", currency: "TWD", value: +aval, note: anote });
+      if (hasUSD) newAssets.push({ id: Date.now() + 1, name: aname + "（美金）", type: "現金", currency: "USD", usdAmount: +ausd, value: +ausd * usdRate, note: anote });
+      setAssets(newAssets);
+    } else {
+      if (!aval) return;
+      setAssets([...assets, { id: Date.now(), name: aname, type: atype, currency: "TWD", value: +aval, note: anote }]);
+    }
+    setAname(""); setAval(""); setAusd(""); setAnote(""); setShowForm(false);
+  };
+
+  // group cash separately for display
+  const cashAssets = assets.filter(a => a.type === "現金");
+  const otherAssets = assets.filter(a => a.type !== "現金");
+  const cashTWD = cashAssets.filter(a => a.currency !== "USD").reduce((s,a) => s + (a.value||0), 0);
+  const cashUSD = cashAssets.filter(a => a.currency === "USD").reduce((s,a) => s + (a.usdAmount||0), 0);
+
+  return (
+    <Card accent={color + "66"}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color }}>🏠 {name} 其他資產</div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>NT$ {fmt(total)}</div>
+          {cashUSD > 0 && <div style={{ fontSize: 10, color: C.dim }}>含 US${fmt(cashUSD, 0)} @ {usdRate.toFixed(1)}</div>}
+        </div>
+      </div>
+
+      {/* Cash summary box */}
+      {cashAssets.length > 0 && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px", marginBottom: 10 }}>
+          <div style={{ fontSize: 10, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>💵 現金持有</div>
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+            {cashTWD > 0 && (
+              <div>
+                <div style={{ fontSize: 10, color: C.dim }}>台幣</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: C.p1 }}>NT$ {fmt(cashTWD)}</div>
+              </div>
+            )}
+            {cashUSD > 0 && (
+              <div>
+                <div style={{ fontSize: 10, color: C.dim }}>美金</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: C.gold }}>US$ {fmt(cashUSD, 0)}</div>
+                <div style={{ fontSize: 10, color: C.dim }}>≈ NT$ {fmt(cashUSD * usdRate)}</div>
+              </div>
+            )}
+            {cashTWD > 0 && cashUSD > 0 && (
+              <div style={{ borderLeft: `1px solid ${C.border}`, paddingLeft: 20 }}>
+                <div style={{ fontSize: 10, color: C.dim }}>合計</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color }}>NT$ {fmt(cashTWD + cashUSD * usdRate)}</div>
+              </div>
+            )}
+          </div>
+          {/* Cash edit buttons */}
+          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+            {cashAssets.map(a => (
+              <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 4, background: C.card, border: `1px solid ${C.border}`, borderRadius: 5, padding: "3px 8px", fontSize: 11 }}>
+                <span style={{ color: C.dim }}>{a.currency === "USD" ? `US$${fmt(a.usdAmount,0)}` : `NT$${fmt(a.value)}`}</span>
+                <Btn small color={C.red} onClick={() => setAssets(assets.filter(x => x.id !== a.id))}>✕</Btn>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Other assets */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+        {otherAssets.map(a => (
+          <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+            padding: "9px 12px", background: C.surface, borderRadius: 8, border: `1px solid ${C.border}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Tag color={color}>{a.type}</Tag>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{a.name}</div>
+                {a.note && <div style={{ fontSize: 11, color: C.dim }}>{a.note}</div>}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontWeight: 700, color: C.text }}>NT$ {fmt(a.value)}</span>
+              <Btn small color={C.red} onClick={() => setAssets(assets.filter(x => x.id !== a.id))}>✕</Btn>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Add form */}
+      {!showForm ? (
+        <Btn color={color} full onClick={() => setShowForm(true)} style={{ marginTop: 12 }}>＋ 新增資產</Btn>
+      ) : (
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 7, background: C.surface, borderRadius: 8, padding: 12, border: `1px solid ${C.border}` }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 110px", gap: 7 }}>
+            <Inp value={aname} onChange={setAname} placeholder={atype === "現金" ? "帳戶名稱（如：玉山銀行）" : "資產名稱（如：信義區房產）"} />
+            <Sel value={atype} onChange={setAtype} options={types} />
+          </div>
+          {atype === "現金" ? (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>
+              <div>
+                <div style={{ fontSize: 10, color: C.dim, marginBottom: 3 }}>台幣金額 (NT$)</div>
+                <Inp value={aval} onChange={setAval} placeholder="0" type="number" />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: C.dim, marginBottom: 3 }}>美金金額 (US$)　@ {usdRate.toFixed(1)}</div>
+                <Inp value={ausd} onChange={setAusd} placeholder="0" type="number" />
+              </div>
+            </div>
+          ) : (
+            <Inp value={aval} onChange={setAval} placeholder="估值 (NT$)" type="number" />
+          )}
+          <Inp value={anote} onChange={setAnote} placeholder="備注（選填）" />
+          <div style={{ display: "flex", gap: 7 }}>
+            <Btn onClick={add} color={color} style={{ flex: 1 }}>新增</Btn>
+            <Btn onClick={() => setShowForm(false)} color={C.dim} style={{ flex: 1 }}>取消</Btn>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+
+// ─── Debts Panel ──────────────────────────────────────────────────────────────
+function DebtsPanel({ name, color, debts, setDebts, gross }) {
+  const [showForm, setShowForm] = useState(false);
+  const [dname, setDname] = useState("");
+  const [dtype, setDtype] = useState("房貸");
+  const [dtotal, setDtotal] = useState("");
+  const [dremaining, setDremaining] = useState("");
+  const [drate, setDrate] = useState("");
+  const [dmonthly, setDmonthly] = useState("");
+  const [dnote, setDnote] = useState("");
+  const debtTypes = ["房貸", "車貸", "信貸", "學貸", "其他"];
+
+  const totalDebt = debts.reduce((s, d) => s + (d.remaining || 0), 0);
+  const netWorth = gross - totalDebt;
+  const ltv = gross > 0 ? (totalDebt / gross) * 100 : 0;
+
+  const add = () => {
+    if (!dname || !dremaining) return;
+    setDebts([...debts, {
+      id: Date.now(), name: dname, type: dtype,
+      total: +dtotal || +dremaining, remaining: +dremaining,
+      rate: +drate || null, monthly: +dmonthly || null, note: dnote
+    }]);
+    setDname(""); setDtotal(""); setDremaining(""); setDrate(""); setDmonthly(""); setDnote("");
+    setShowForm(false);
+  };
+
+  const updateRemaining = (id, v) => setDebts(debts.map(d => d.id === id ? { ...d, remaining: +v || 0 } : d));
+
+  return (
+    <Card accent={C.red + "99"}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: 1, textTransform: "uppercase", marginBottom: 3 }}>負債</div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: C.red }}>🏦 {name} 負債管理</div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 11, color: C.dim }}>負債合計</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: C.red }}>- NT$ {fmt(totalDebt)}</div>
+          <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>
+            負債比 {ltv.toFixed(1)}%
+          </div>
+        </div>
+      </div>
+
+      {/* Net worth summary bar */}
+      {gross > 0 && (
+        <div style={{ background: C.surface, borderRadius: 8, padding: 12, border: `1px solid ${C.border}`, marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>資產負債概況</div>
+          <div style={{ display: "flex", gap: 3, borderRadius: 6, overflow: "hidden", height: 28 }}>
+            <div style={{
+              flex: netWorth, background: color, display: "flex", alignItems: "center",
+              justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#000", minWidth: 30
+            }}>
+              淨 {gross > 0 ? ((netWorth / gross) * 100).toFixed(0) : 0}%
+            </div>
+            {totalDebt > 0 && (
+              <div style={{
+                flex: totalDebt, background: C.red + "bb", display: "flex", alignItems: "center",
+                justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#fff", minWidth: 30
+              }}>
+                債 {ltv.toFixed(0)}%
+              </div>
+            )}
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
+            <div>
+              <div style={{ fontSize: 10, color: C.dim }}>總資產</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.text }}>NT$ {fmt(gross)}</div>
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 10, color: C.dim }}>負債</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.red }}>- NT$ {fmt(totalDebt)}</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 10, color: C.dim }}>淨資產</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: netWorth >= 0 ? color : C.red }}>NT$ {fmt(netWorth)}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Debt list */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+        {debts.map(d => {
+          const paidPct = d.total > 0 ? Math.min(((d.total - d.remaining) / d.total) * 100, 100) : 0;
+          return (
+            <div key={d.id} style={{ background: C.surface, borderRadius: 8, padding: 14, border: `1px solid ${C.border}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Tag color={C.red}>{d.type}</Tag>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{d.name}</div>
+                    {d.note && <div style={{ fontSize: 11, color: C.dim }}>{d.note}</div>}
+                  </div>
+                </div>
+                <Btn small color={C.red} onClick={() => setDebts(debts.filter(x => x.id !== d.id))}>✕</Btn>
+              </div>
+
+              <div style={{ display: "flex", gap: 16, fontSize: 12, marginBottom: 8, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ color: C.dim, fontSize: 10 }}>剩餘欠款</div>
+                  <div style={{ fontWeight: 800, color: C.red }}>NT$ {fmt(d.remaining)}</div>
+                </div>
+                {d.total > d.remaining && (
+                  <div>
+                    <div style={{ color: C.dim, fontSize: 10 }}>原始金額</div>
+                    <div style={{ fontWeight: 600, color: C.dim }}>NT$ {fmt(d.total)}</div>
+                  </div>
+                )}
+                {d.rate && (
+                  <div>
+                    <div style={{ color: C.dim, fontSize: 10 }}>年利率</div>
+                    <div style={{ fontWeight: 600, color: C.gold }}>{d.rate}%</div>
+                  </div>
+                )}
+                {d.monthly && (
+                  <div>
+                    <div style={{ color: C.dim, fontSize: 10 }}>月繳</div>
+                    <div style={{ fontWeight: 600, color: C.text }}>NT$ {fmt(d.monthly)}</div>
+                  </div>
+                )}
+                {d.monthly && d.remaining && (
+                  <div>
+                    <div style={{ color: C.dim, fontSize: 10 }}>估計剩餘期數</div>
+                    <div style={{ fontWeight: 600, color: C.dim }}>{Math.ceil(d.remaining / d.monthly)} 個月</div>
+                  </div>
+                )}
+              </div>
+
+              {d.total > 0 && (
+                <>
+                  <div style={{ background: C.border, borderRadius: 20, height: 5, marginBottom: 4 }}>
+                    <div style={{ height: 5, borderRadius: 20, width: `${paidPct}%`, background: color, transition: "width 0.5s" }} />
+                  </div>
+                  <div style={{ fontSize: 10, color: C.dim }}>已還清 {paidPct.toFixed(1)}%</div>
+                </>
+              )}
+
+              <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center" }}>
+                <span style={{ fontSize: 11, color: C.dim }}>更新剩餘欠款：</span>
+                <input type="number" defaultValue={d.remaining} key={d.remaining}
+                  onBlur={e => updateRemaining(d.id, e.target.value)}
+                  style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 4, color: C.red,
+                    padding: "4px 8px", fontSize: 12, width: 120, outline: "none", fontWeight: 700 }} />
+              </div>
+            </div>
+          );
+        })}
+        {debts.length === 0 && <div style={{ color: C.dim, fontSize: 13 }}>尚無負債紀錄</div>}
+      </div>
+
+      {!showForm ? (
+        <Btn color={C.red} full onClick={() => setShowForm(true)}>＋ 新增負債</Btn>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 7, background: C.surface, borderRadius: 8, padding: 12, border: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>新增負債</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 110px", gap: 7 }}>
+            <Inp value={dname} onChange={setDname} placeholder="名稱（如：信義區房貸）" />
+            <Sel value={dtype} onChange={setDtype} options={debtTypes} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>
+            <Inp value={dtotal} onChange={setDtotal} placeholder="原始貸款金額（選填）" type="number" />
+            <Inp value={dremaining} onChange={setDremaining} placeholder="目前剩餘欠款 *" type="number" />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 7 }}>
+            <Inp value={drate} onChange={setDrate} placeholder="年利率 % （選填）" type="number" />
+            <Inp value={dmonthly} onChange={setDmonthly} placeholder="每月還款（選填）" type="number" />
+            <Inp value={dnote} onChange={setDnote} placeholder="備注（選填）" />
+          </div>
+          <div style={{ display: "flex", gap: 7 }}>
+            <Btn onClick={add} color={C.red} style={{ flex: 1 }}>新增</Btn>
+            <Btn onClick={() => setShowForm(false)} color={C.dim} style={{ flex: 1 }}>取消</Btn>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─── Shared Account Panel ────────────────────────────────────────────────────
+// Covers: cash balance, rental income, shared monthly bills
+function SharedAccountPanel({ shared, setShared }) {
+  // shared = { cashBalance, rentIncome: [...], bills: [...] }
+  const cashBalance = shared.cashBalance ?? 0;
+  const rentItems = shared.rentIncome || [];
+  const bills = shared.bills || [];
+
+  // ── cash balance inline edit ──
+  const [editingCash, setEditingCash] = useState(false);
+  const [cashDraft, setCashDraft] = useState("");
+
+  // ── rent income form ──
+  const [showRentForm, setShowRentForm] = useState(false);
+  const [rLabel, setRLabel] = useState("");
+  const [rAmount, setRAmount] = useState("");
+  const [rNote, setRNote] = useState("");
+  const [rEditId, setREditId] = useState(null);
+
+  // ── bill form ──
+  const [month, setMonth] = useState(now());
+  const [billAmt, setBillAmt] = useState("");
+  const [billNote, setBillNote] = useState("");
+  const [billEditId, setBillEditId] = useState(null);
+
+  const saveCash = () => {
+    setShared({ ...shared, cashBalance: +cashDraft || 0 });
+    setEditingCash(false);
+  };
+
+  const totalRent = rentItems.reduce((s, r) => s + (r.amount || 0), 0);
+
+  const addRent = () => {
+    if (!rLabel || !rAmount) return;
+    const updated = rEditId
+      ? rentItems.map(r => r.id === rEditId ? { ...r, label: rLabel, amount: +rAmount, note: rNote } : r)
+      : [...rentItems, { id: Date.now(), label: rLabel, amount: +rAmount, note: rNote }];
+    setShared({ ...shared, rentIncome: updated });
+    setRLabel(""); setRAmount(""); setRNote(""); setREditId(null); setShowRentForm(false);
+  };
+  const startRentEdit = (r) => { setREditId(r.id); setRLabel(r.label); setRAmount(String(r.amount)); setRNote(r.note||""); setShowRentForm(true); };
+  const delRent = (id) => setShared({ ...shared, rentIncome: rentItems.filter(r => r.id !== id) });
+
+  const addBill = () => {
+    if (!billAmt) return;
+    const updated = billEditId
+      ? bills.map(b => b.id === billEditId ? { ...b, month, amount: +billAmt, note: billNote } : b)
+      : [{ id: Date.now(), month, amount: +billAmt, note: billNote }, ...bills];
+    setShared({ ...shared, bills: updated });
+    setBillAmt(""); setBillNote(""); setBillEditId(null);
+  };
+  const startBillEdit = (b) => { setBillEditId(b.id); setMonth(b.month); setBillAmt(String(b.amount)); setBillNote(b.note||""); };
+  const delBill = (id) => setShared({ ...shared, bills: bills.filter(b => b.id !== id) });
+
+  const sortedBills = [...bills].sort((a,b) => b.month.localeCompare(a.month));
+  const thisMonthBill = bills.filter(b => b.month === now()).reduce((s,b) => s + b.amount, 0);
+  const thisY = String(new Date().getFullYear());
+  const yearTotal = bills.filter(b => b.month.startsWith(thisY)).reduce((s,b) => s + b.amount, 0);
+  const monthAvg = bills.length ? bills.reduce((s,b) => s+b.amount, 0) / bills.length : 0;
+  const last6 = sortedBills.slice(0,6).reverse();
+  const maxB = Math.max(...last6.map(b => b.amount), 1);
+
+  // monthly cashflow of shared account
+  const monthlyNet = totalRent - thisMonthBill;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+      {/* ── Top summary: cash + monthly cashflow ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        {/* Cash balance card */}
+        <Card accent={C.p1}>
+          <div style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>💵 共同帳戶現金</div>
+          {editingCash ? (
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <Inp value={cashDraft} onChange={setCashDraft} type="number" placeholder="餘額" style={{ fontSize: 18, fontWeight: 800 }} />
+              <Btn small color={C.p1} onClick={saveCash}>✓</Btn>
+              <Btn small color={C.dim} onClick={() => setEditingCash(false)}>✕</Btn>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, cursor: "pointer" }} onClick={() => { setCashDraft(String(cashBalance)); setEditingCash(true); }}>
+              <div style={{ fontSize: 22, fontWeight: 800, color: C.p1 }}>NT$ {fmt(cashBalance)}</div>
+              <span style={{ fontSize: 10, color: C.dimmer }}>✎ 點擊更新</span>
+            </div>
+          )}
+        </Card>
+
+        {/* Rent income card */}
+        <Card accent={C.p2}>
+          <div style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>🏠 每月租金收入</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: C.p2 }}>NT$ {fmt(totalRent)}</div>
+          {rentItems.map(r => (
+            <div key={r.id} style={{ fontSize: 11, color: C.dim, marginTop: 3 }}>
+              {r.label}{r.note ? ` · ${r.note}` : ""}: <span style={{ color: C.p2 }}>+{fmt(r.amount)}</span>
+              <span style={{ marginLeft: 6, cursor: "pointer", color: C.dimmer }} onClick={() => startRentEdit(r)}>✎</span>
+              <span style={{ marginLeft: 4, cursor: "pointer", color: C.red + "99" }} onClick={() => delRent(r.id)}>✕</span>
+            </div>
+          ))}
+          {rentItems.length === 0 && <div style={{ fontSize: 11, color: C.dimmer, marginTop: 4 }}>尚未設定</div>}
+          {!showRentForm ? (
+            <div style={{ marginTop: 8 }}>
+              <Btn small color={C.p2} onClick={() => setShowRentForm(true)}>＋ 新增</Btn>
+            </div>
+          ) : (
+            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 5 }}>
+              <Inp value={rLabel} onChange={setRLabel} placeholder="名稱（如：大安區出租房）" small />
+              <div style={{ display: "flex", gap: 5 }}>
+                <Inp value={rAmount} onChange={setRAmount} placeholder="月租金" type="number" small />
+                <Inp value={rNote} onChange={setRNote} placeholder="備注" small />
+              </div>
+              <div style={{ display: "flex", gap: 5 }}>
+                <Btn small color={C.p2} onClick={addRent} style={{ flex: 1 }}>{rEditId ? "更新" : "新增"}</Btn>
+                <Btn small color={C.dim} onClick={() => { setShowRentForm(false); setREditId(null); setRLabel(""); setRAmount(""); setRNote(""); }} style={{ flex: 1 }}>取消</Btn>
+              </div>
+            </div>
+          )}
+        </Card>
+
+        {/* Monthly cashflow card */}
+        <Card accent={monthlyNet >= 0 ? C.p1 : C.red}>
+          <div style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>📊 本月共同結餘</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: monthlyNet >= 0 ? C.p1 : C.red }}>
+            {monthlyNet >= 0 ? "+" : ""}NT$ {fmt(monthlyNet)}
+          </div>
+          <div style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>
+            租金 <span style={{ color: C.p2 }}>+{fmt(totalRent)}</span>
+            {" "}－ 帳單 <span style={{ color: C.gold }}>{fmt(thisMonthBill)}</span>
+          </div>
+        </Card>
+      </div>
+
+      {/* ── Bill section ── */}
+      <Card accent={C.gold}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: 1, textTransform: "uppercase", marginBottom: 3 }}>共同支出</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: C.gold }}>💳 共同信用卡帳單</div>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 11, color: C.dim }}>今年合計</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>NT$ {fmt(yearTotal)}</div>
+            <div style={{ fontSize: 11, color: C.dim }}>月均 NT$ {fmt(monthAvg)}</div>
+          </div>
+        </div>
+
+        {last6.length > 0 && (
+          <div style={{ display: "flex", gap: 6, alignItems: "flex-end", height: 56, marginBottom: 14 }}>
+            {last6.map(b => (
+              <div key={b.id} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+                <div style={{ fontSize: 9, color: C.dim }}>{fmt(b.amount/1000)}k</div>
+                <div style={{ width: "100%", background: C.gold, borderRadius: "3px 3px 0 0", opacity: 0.85,
+                  height: Math.max(4, (b.amount/maxB)*40) }} />
+                <div style={{ fontSize: 9, color: C.dim }}>{b.month.slice(5)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ background: C.surface, borderRadius: 8, padding: 12, border: `1px solid ${C.border}`, marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+            {billEditId ? "編輯帳單" : "輸入月帳單"}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "140px 1fr 1fr auto", gap: 7 }}>
+            <Inp value={month} onChange={setMonth} type="month" />
+            <Inp value={billAmt} onChange={setBillAmt} placeholder="帳單金額 (NT$)" type="number" />
+            <Inp value={billNote} onChange={setBillNote} placeholder="備注（如：含旅費）" />
+            <Btn onClick={addBill} color={C.gold}>{billEditId ? "更新" : "記錄"}</Btn>
+          </div>
+          {billEditId && <Btn small color={C.dim} onClick={() => { setBillEditId(null); setBillAmt(""); setBillNote(""); }} style={{ marginTop: 7 }}>取消編輯</Btn>}
+        </div>
+
+        <div style={{ maxHeight: 260, overflowY: "auto" }}>
+          {sortedBills.length === 0 && <div style={{ color: C.dim, fontSize: 13, textAlign: "center", padding: "16px 0" }}>尚無帳單紀錄</div>}
+          {sortedBills.map(b => (
+            <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+              padding: "9px 0", borderBottom: `1px solid ${C.border}`, fontSize: 13 }}>
+              <div>
+                <span style={{ fontWeight: 700, color: C.text, marginRight: 10 }}>{b.month}</span>
+                {b.note && <span style={{ color: C.dim, fontSize: 11 }}>{b.note}</span>}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontWeight: 800, fontSize: 14, color: C.gold }}>NT$ {fmt(b.amount)}</span>
+                <Btn small color={C.p2} onClick={() => startBillEdit(b)}>編輯</Btn>
+                <Btn small color={C.red} onClick={() => delBill(b.id)}>✕</Btn>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ─── Goals Panel ──────────────────────────────────────────────────────────────
+function GoalsPanel({ goals, setGoals }) {
+  const [showForm, setShowForm] = useState(false);
+  const [gname, setGname] = useState("");
+  const [gtarget, setGtarget] = useState("");
+  const [gdeadline, setGdeadline] = useState("");
+  const [gcurrent, setGcurrent] = useState("");
+
+  const add = () => {
+    if (!gname || !gtarget) return;
+    setGoals([...goals, { id: Date.now(), name: gname, target: +gtarget, deadline: gdeadline, current: +gcurrent || 0 }]);
+    setGname(""); setGtarget(""); setGdeadline(""); setGcurrent(""); setShowForm(false);
+  };
+
+  const updateCurrent = (id, v) => setGoals(goals.map(g => g.id === id ? { ...g, current: +v || 0 } : g));
+
+  return (
+    <Card accent={C.p2}>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 11, color: C.dim, letterSpacing: 1, textTransform: "uppercase", marginBottom: 3 }}>共同財務目標</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: C.p2 }}>🎯 目標追蹤</div>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {goals.map(g => {
+          const p = Math.min((g.current / g.target) * 100, 100);
+          return (
+            <div key={g.id} style={{ background: C.surface, borderRadius: 10, padding: 14, border: `1px solid ${C.border}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>{g.name}</div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {g.deadline && <span style={{ fontSize: 11, color: C.dim }}>📅 {g.deadline}</span>}
+                  <Btn small color={C.red} onClick={() => setGoals(goals.filter(x => x.id !== g.id))}>✕</Btn>
+                </div>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 8 }}>
+                <span style={{ color: C.dim }}>已存 NT$ {fmt(g.current)}</span>
+                <span style={{ color: C.p2, fontWeight: 700 }}>目標 NT$ {fmt(g.target)}</span>
+              </div>
+              <div style={{ background: C.border, borderRadius: 20, height: 7, marginBottom: 8, overflow: "hidden" }}>
+                <div style={{ height: 7, borderRadius: 20, width: `${p}%`,
+                  background: p >= 100 ? C.p1 : `linear-gradient(90deg, ${C.p2}, ${C.p1})`, transition: "width 0.6s" }} />
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 13, fontWeight: 800, color: p >= 100 ? C.p1 : C.p2 }}>{p.toFixed(1)}%</span>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ fontSize: 11, color: C.dim }}>更新現值：</span>
+                  <input type="number" defaultValue={g.current} key={g.current}
+                    onBlur={e => updateCurrent(g.id, e.target.value)}
+                    style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 4, color: C.text,
+                      padding: "4px 8px", fontSize: 12, width: 110, outline: "none" }} />
+                </div>
+              </div>
+              {p < 100 && (
+                <div style={{ marginTop: 6, fontSize: 11, color: C.dim }}>
+                  還差 NT$ {fmt(g.target - g.current)}
+                  {g.deadline && (() => {
+                    const months = Math.max(1, Math.round((new Date(g.deadline + "-01") - new Date()) / (1000 * 60 * 60 * 24 * 30)));
+                    return ` · 剩 ${months} 個月 · 每月需存 NT$ ${fmt((g.target - g.current) / months)}`;
+                  })()}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {goals.length === 0 && !showForm && <div style={{ color: C.dim, fontSize: 13, padding: "12px 0" }}>尚未設定目標</div>}
+      {!showForm ? (
+        <Btn color={C.p2} full onClick={() => setShowForm(true)} style={{ marginTop: 12 }}>＋ 新增目標</Btn>
+      ) : (
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 7 }}>
+          <Inp value={gname} onChange={setGname} placeholder="目標名稱（如：環球旅行基金）" />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 7 }}>
+            <Inp value={gtarget} onChange={setGtarget} placeholder="目標金額" type="number" />
+            <Inp value={gcurrent} onChange={setGcurrent} placeholder="目前已存" type="number" />
+            <Inp value={gdeadline} onChange={setGdeadline} type="month" placeholder="目標日期" />
+          </div>
+          <div style={{ display: "flex", gap: 7 }}>
+            <Btn onClick={add} color={C.p2} style={{ flex: 1 }}>新增</Btn>
+            <Btn onClick={() => setShowForm(false)} color={C.dim} style={{ flex: 1 }}>取消</Btn>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+
+// ─── Cashflow Panel ───────────────────────────────────────────────────────────
+// Each person sets their monthly income + custom expense line items for partner visibility
+function CashflowPanel({ name, color, cashflow, setCashflow }) {
+  // cashflow = { income: [...], expenses: [...] }
+  // income item: { id, label, amount, note }
+  // expense item: { id, label, amount, note }
+  const [showIncForm, setShowIncForm] = useState(false);
+  const [showExpForm, setShowExpForm] = useState(false);
+  const [iLabel, setILabel] = useState("");
+  const [iAmount, setIAmount] = useState("");
+  const [iNote, setINote] = useState("");
+  const [eLabel, setELabel] = useState("");
+  const [eAmount, setEAmount] = useState("");
+  const [eNote, setENote] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editType, setEditType] = useState(null); // "income" | "expense"
+
+  const income = cashflow.income || [];
+  const expenses = cashflow.expenses || [];
+  const totalIncome = income.reduce((s, x) => s + (x.amount || 0), 0);
+  const totalExpenses = expenses.reduce((s, x) => s + (x.amount || 0), 0);
+  const surplus = totalIncome - totalExpenses;
+  const savingsRate = totalIncome > 0 ? (surplus / totalIncome) * 100 : null;
+
+  const addIncome = () => {
+    if (!iLabel || !iAmount) return;
+    if (editingId && editType === "income") {
+      setCashflow({ ...cashflow, income: income.map(x => x.id === editingId ? { ...x, label: iLabel, amount: +iAmount, note: iNote } : x) });
+      setEditingId(null); setEditType(null);
+    } else {
+      setCashflow({ ...cashflow, income: [...income, { id: Date.now(), label: iLabel, amount: +iAmount, note: iNote }] });
+    }
+    setILabel(""); setIAmount(""); setINote(""); setShowIncForm(false);
+  };
+
+  const addExpense = () => {
+    if (!eLabel || !eAmount) return;
+    if (editingId && editType === "expense") {
+      setCashflow({ ...cashflow, expenses: expenses.map(x => x.id === editingId ? { ...x, label: eLabel, amount: +eAmount, note: eNote } : x) });
+      setEditingId(null); setEditType(null);
+    } else {
+      setCashflow({ ...cashflow, expenses: [...expenses, { id: Date.now(), label: eLabel, amount: +eAmount, note: eNote }] });
+    }
+    setELabel(""); setEAmount(""); setENote(""); setShowExpForm(false);
+  };
+
+  const startEdit = (item, type) => {
+    setEditingId(item.id); setEditType(type);
+    if (type === "income") { setILabel(item.label); setIAmount(String(item.amount)); setINote(item.note || ""); setShowIncForm(true); }
+    else { setELabel(item.label); setEAmount(String(item.amount)); setENote(item.note || ""); setShowExpForm(true); }
+  };
+
+  const cancelEdit = () => { setEditingId(null); setEditType(null); setShowIncForm(false); setShowExpForm(false); setILabel(""); setIAmount(""); setINote(""); setELabel(""); setEAmount(""); setENote(""); };
+
+  const delIncome = (id) => setCashflow({ ...cashflow, income: income.filter(x => x.id !== id) });
+  const delExpense = (id) => setCashflow({ ...cashflow, expenses: expenses.filter(x => x.id !== id) });
+
+  const barMax = Math.max(totalIncome, totalExpenses, 1);
+
+  return (
+    <Card accent={color + "88"}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: 1, textTransform: "uppercase", marginBottom: 3 }}>月收支概況</div>
+          <div style={{ fontSize: 16, fontWeight: 800, color }}>💰 {name} 收支</div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 11, color: C.dim }}>月結餘</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: surplus >= 0 ? color : C.red }}>
+            {surplus >= 0 ? "+" : ""}NT$ {fmt(surplus)}
+          </div>
+          {savingsRate !== null && (
+            <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>
+              儲蓄率 <span style={{ color: savingsRate >= 20 ? C.p1 : savingsRate >= 10 ? C.gold : C.red, fontWeight: 700 }}>{savingsRate.toFixed(1)}%</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Visual bar comparison */}
+      {(totalIncome > 0 || totalExpenses > 0) && (
+        <div style={{ marginBottom: 16, background: C.surface, borderRadius: 8, padding: 12, border: `1px solid ${C.border}` }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
+                <span style={{ color: C.dim }}>月收入</span>
+                <span style={{ color: C.p1, fontWeight: 700 }}>NT$ {fmt(totalIncome)}</span>
+              </div>
+              <div style={{ background: C.border, borderRadius: 20, height: 8 }}>
+                <div style={{ height: 8, borderRadius: 20, width: `${(totalIncome / barMax) * 100}%`, background: C.p1, transition: "width 0.5s" }} />
+              </div>
+            </div>
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
+                <span style={{ color: C.dim }}>月支出</span>
+                <span style={{ color: C.red, fontWeight: 700 }}>NT$ {fmt(totalExpenses)}</span>
+              </div>
+              <div style={{ background: C.border, borderRadius: 20, height: 8 }}>
+                <div style={{ height: 8, borderRadius: 20, width: `${(totalExpenses / barMax) * 100}%`, background: C.red + "cc", transition: "width 0.5s" }} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        {/* ── Income Column ── */}
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.p1, textTransform: "uppercase", letterSpacing: 0.5 }}>📥 月收入</div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.p1 }}>NT$ {fmt(totalIncome)}</div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 8 }}>
+            {income.map(x => (
+              <div key={x.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "8px 10px", background: C.surface, borderRadius: 7, border: `1px solid ${C.border}` }}>
+                <div>
+                  <div style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{x.label}</div>
+                  {x.note && <div style={{ fontSize: 10, color: C.dim }}>{x.note}</div>}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.p1 }}>+{fmt(x.amount)}</span>
+                  <Btn small color={C.dim} onClick={() => startEdit(x, "income")}>✎</Btn>
+                  <Btn small color={C.red} onClick={() => delIncome(x.id)}>✕</Btn>
+                </div>
+              </div>
+            ))}
+            {income.length === 0 && <div style={{ fontSize: 12, color: C.dimmer, padding: "6px 0" }}>尚未設定收入來源</div>}
+          </div>
+          {!showIncForm ? (
+            <Btn color={C.p1} full small onClick={() => { setShowIncForm(true); setEditingId(null); setEditType(null); }}>＋ 新增收入</Btn>
+          ) : (
+            <div style={{ background: C.surface, borderRadius: 7, padding: 10, border: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 6 }}>
+              <Inp value={iLabel} onChange={setILabel} placeholder="項目名稱（如：薪資）" small />
+              <Inp value={iAmount} onChange={setIAmount} placeholder="月金額" type="number" small />
+              <Inp value={iNote} onChange={setINote} placeholder="備注（選填）" small />
+              <div style={{ display: "flex", gap: 5 }}>
+                <Btn onClick={addIncome} color={C.p1} small style={{ flex: 1 }}>{editingId && editType === "income" ? "更新" : "新增"}</Btn>
+                <Btn onClick={cancelEdit} color={C.dim} small style={{ flex: 1 }}>取消</Btn>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Expense Column ── */}
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.red, textTransform: "uppercase", letterSpacing: 0.5 }}>📤 月支出</div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.red }}>NT$ {fmt(totalExpenses)}</div>
+          </div>
+          <div style={{ fontSize: 10, color: C.dimmer, marginBottom: 6 }}>自選填入想讓對方看到的支出項目</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 8 }}>
+            {expenses.map(x => (
+              <div key={x.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "8px 10px", background: C.surface, borderRadius: 7, border: `1px solid ${C.border}` }}>
+                <div>
+                  <div style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{x.label}</div>
+                  {x.note && <div style={{ fontSize: 10, color: C.dim }}>{x.note}</div>}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.red }}>-{fmt(x.amount)}</span>
+                  <Btn small color={C.dim} onClick={() => startEdit(x, "expense")}>✎</Btn>
+                  <Btn small color={C.red} onClick={() => delExpense(x.id)}>✕</Btn>
+                </div>
+              </div>
+            ))}
+            {expenses.length === 0 && <div style={{ fontSize: 12, color: C.dimmer, padding: "6px 0" }}>尚未設定支出項目</div>}
+          </div>
+          {!showExpForm ? (
+            <Btn color={C.red} full small onClick={() => { setShowExpForm(true); setEditingId(null); setEditType(null); }}>＋ 新增支出</Btn>
+          ) : (
+            <div style={{ background: C.surface, borderRadius: 7, padding: 10, border: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 6 }}>
+              <Inp value={eLabel} onChange={setELabel} placeholder="項目名稱（如：房租、保費）" small />
+              <Inp value={eAmount} onChange={setEAmount} placeholder="月金額" type="number" small />
+              <Inp value={eNote} onChange={setENote} placeholder="備注（選填）" small />
+              <div style={{ display: "flex", gap: 5 }}>
+                <Btn onClick={addExpense} color={C.red} small style={{ flex: 1 }}>{editingId && editType === "expense" ? "更新" : "新增"}</Btn>
+                <Btn onClick={cancelEdit} color={C.dim} small style={{ flex: 1 }}>取消</Btn>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// ─── Overview ─────────────────────────────────────────────────────────────────
+function Overview({ p1Name, p2Name, p1NW, p2NW, p1Gross, p2Gross, p1Debt, p2Debt, monthBill, goals, bills, p1Cash, p2Cash, sharedCash, sharedRent, thisMonthBill: thisMonthBillProp, usdRate }) {
+  const total = p1NW + p2NW + sharedCash;
+  const thisY = String(new Date().getFullYear());
+  const yearBills = bills.filter(b => b.month.startsWith(thisY));
+  const yearTotal = yearBills.reduce((s, b) => s + b.amount, 0);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* Top stats */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
+        <Card>
+          <div style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>{p1Name} 淨資產</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.p1 }}>NT$ {fmt(p1NW)}</div>
+          {p1Debt > 0 && <div style={{ fontSize: 10, color: C.dim, marginTop: 4 }}>總 {fmt(p1Gross)} <span style={{ color: C.red }}>負債 {fmt(p1Debt)}</span></div>}
+        </Card>
+        <Card>
+          <div style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>{p2Name} 淨資產</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.p2 }}>NT$ {fmt(p2NW)}</div>
+          {p2Debt > 0 && <div style={{ fontSize: 10, color: C.dim, marginTop: 4 }}>總 {fmt(p2Gross)} <span style={{ color: C.red }}>負債 {fmt(p2Debt)}</span></div>}
+        </Card>
+        <Card>
+          <div style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>💵 共同帳戶現金</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.p1 }}>NT$ {fmt(sharedCash)}</div>
+          {sharedRent > 0 && <div style={{ fontSize: 10, color: C.p2, marginTop: 4 }}>月租金 +{fmt(sharedRent)}</div>}
+          {usdRate && <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>USD/TWD ≈ {usdRate.toFixed(1)}</div>}
+        </Card>
+        <Card>
+          <div style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>💳 本月帳單</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.gold }}>NT$ {fmt(thisMonthBillProp)}</div>
+          {sharedRent > 0 && <div style={{ fontSize: 10, color: thisMonthBillProp <= sharedRent ? C.p1 : C.red, marginTop: 4 }}>
+            結餘 {sharedRent - thisMonthBillProp >= 0 ? "+" : ""}{fmt(sharedRent - thisMonthBillProp)}
+          </div>}
+        </Card>
+        <Card>
+          <div style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>家庭總淨資產</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>NT$ {fmt(total)}</div>
+          {(p1Debt + p2Debt) > 0 && <div style={{ fontSize: 10, color: C.red, marginTop: 4 }}>負債合計 {fmt(p1Debt + p2Debt)}</div>}
+        </Card>
+      </div>
+
+      {/* Wealth comparison bar */}
+      <Card>
+        <div style={{ fontSize: 12, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 14 }}>
+          淨資產對比
+        </div>
+        <div style={{ display: "flex", gap: 3, borderRadius: 8, overflow: "hidden", height: 36 }}>
+          {total > 0 && <>
+            <div style={{ flex: Math.max(p1NW, 0), background: C.p1, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#000", minWidth: 40 }}>
+              {p1Name} {total > 0 ? ((Math.max(p1NW, 0) / Math.max(p1NW + p2NW, 1)) * 100).toFixed(0) : 0}%
+            </div>
+            <div style={{ flex: Math.max(p2NW, 0), background: C.p2, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#fff", minWidth: 40 }}>
+              {p2Name} {total > 0 ? ((Math.max(p2NW, 0) / Math.max(p1NW + p2NW, 1)) * 100).toFixed(0) : 0}%
+            </div>
+          </>}
+          {total === 0 && <div style={{ flex: 1, background: C.border, display: "flex", alignItems: "center", justifyContent: "center", color: C.dim, fontSize: 12 }}>尚無資產</div>}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10 }}>
+          {[
+            { name: p1Name, nw: p1NW, gross: p1Gross, debt: p1Debt, color: C.p1 },
+            { name: p2Name, nw: p2NW, gross: p2Gross, debt: p2Debt, color: C.p2 },
+          ].map(({ name, nw, gross, debt, color }) => (
+            <div key={name} style={{ background: C.surface, borderRadius: 8, padding: 10, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color, marginBottom: 6 }}>● {name}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                <span style={{ color: C.dim }}>總資產</span><span style={{ color: C.text }}>NT$ {fmt(gross)}</span>
+              </div>
+              {debt > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                <span style={{ color: C.dim }}>負債</span><span style={{ color: C.red }}>- NT$ {fmt(debt)}</span>
+              </div>}
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 800, marginTop: 4, paddingTop: 4, borderTop: `1px solid ${C.border}` }}>
+                <span style={{ color: C.dim }}>淨資產</span><span style={{ color: nw >= 0 ? color : C.red }}>NT$ {fmt(nw)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* Cashflow comparison */}
+      {(p1Cash.income?.length > 0 || p2Cash.income?.length > 0 || p1Cash.expenses?.length > 0 || p2Cash.expenses?.length > 0) && (() => {
+        const p1Inc = (p1Cash.income || []).reduce((s, x) => s + (x.amount || 0), 0);
+        const p2Inc = (p2Cash.income || []).reduce((s, x) => s + (x.amount || 0), 0);
+        const p1Exp = (p1Cash.expenses || []).reduce((s, x) => s + (x.amount || 0), 0);
+        const p2Exp = (p2Cash.expenses || []).reduce((s, x) => s + (x.amount || 0), 0);
+        const p1Sur = p1Inc - p1Exp;
+        const p2Sur = p2Inc - p2Exp;
+        const maxInc = Math.max(p1Inc, p2Inc, 1);
+        return (
+          <Card>
+            <div style={{ fontSize: 12, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 14 }}>
+              💰 月收支對比
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              {[
+                { name: p1Name, color: C.p1, inc: p1Inc, exp: p1Exp, sur: p1Sur, cash: p1Cash },
+                { name: p2Name, color: C.p2, inc: p2Inc, exp: p2Exp, sur: p2Sur, cash: p2Cash },
+              ].map(({ name, color, inc, exp, sur, cash }) => {
+                const rate = inc > 0 ? (sur / inc) * 100 : null;
+                return (
+                  <div key={name} style={{ background: C.surface, borderRadius: 10, padding: 14, border: `1px solid ${C.border}` }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color, marginBottom: 12 }}>● {name}</div>
+                    {/* Income bar */}
+                    <div style={{ marginBottom: 8 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+                        <span style={{ color: C.dim }}>月收入</span>
+                        <span style={{ color: C.p1, fontWeight: 700 }}>NT$ {fmt(inc)}</span>
+                      </div>
+                      <div style={{ background: C.border, borderRadius: 20, height: 6 }}>
+                        <div style={{ height: 6, borderRadius: 20, width: `${(inc / maxInc) * 100}%`, background: C.p1 }} />
+                      </div>
+                    </div>
+                    {/* Expense bar */}
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+                        <span style={{ color: C.dim }}>月支出</span>
+                        <span style={{ color: C.red, fontWeight: 700 }}>NT$ {fmt(exp)}</span>
+                      </div>
+                      <div style={{ background: C.border, borderRadius: 20, height: 6 }}>
+                        <div style={{ height: 6, borderRadius: 20, width: `${inc > 0 ? Math.min((exp / inc) * 100, 100) : 0}%`, background: C.red + "cc" }} />
+                      </div>
+                    </div>
+                    {/* Surplus row */}
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 800,
+                      paddingTop: 8, borderTop: `1px solid ${C.border}`, marginBottom: 10 }}>
+                      <span style={{ color: C.dim }}>月結餘</span>
+                      <span style={{ color: sur >= 0 ? color : C.red }}>{sur >= 0 ? "+" : ""}NT$ {fmt(sur)}</span>
+                    </div>
+                    {rate !== null && (
+                      <div style={{ fontSize: 11, color: C.dim, marginBottom: 10 }}>
+                        儲蓄率 <span style={{ color: rate >= 20 ? C.p1 : rate >= 10 ? C.gold : C.red, fontWeight: 700 }}>{rate.toFixed(1)}%</span>
+                      </div>
+                    )}
+                    {/* Expense breakdown */}
+                    {(cash.expenses || []).length > 0 && (
+                      <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+                        <div style={{ fontSize: 10, color: C.dimmer, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>支出明細</div>
+                        {(cash.expenses || []).map(x => (
+                          <div key={x.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, paddingBottom: 3 }}>
+                            <span style={{ color: C.dim }}>{x.label}{x.note ? <span style={{ color: C.dimmer }}> · {x.note}</span> : ""}</span>
+                            <span style={{ color: C.text }}>NT$ {fmt(x.amount)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* Income breakdown */}
+                    {(cash.income || []).length > 0 && (
+                      <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8, marginTop: 4 }}>
+                        <div style={{ fontSize: 10, color: C.dimmer, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>收入明細</div>
+                        {(cash.income || []).map(x => (
+                          <div key={x.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, paddingBottom: 3 }}>
+                            <span style={{ color: C.dim }}>{x.label}{x.note ? <span style={{ color: C.dimmer }}> · {x.note}</span> : ""}</span>
+                            <span style={{ color: C.p1 }}>+NT$ {fmt(x.amount)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        );
+      })()}
+
+      {/* Goals */}
+      {goals.length > 0 && (
+        <Card>
+          <div style={{ fontSize: 12, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 12 }}>🎯 目標進度</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10 }}>
+            {goals.map(g => {
+              const p = Math.min((g.current / g.target) * 100, 100);
+              return (
+                <div key={g.id} style={{ background: C.surface, borderRadius: 8, padding: 12, border: `1px solid ${C.border}` }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>{g.name}</div>
+                  <div style={{ background: C.border, borderRadius: 20, height: 5, marginBottom: 5 }}>
+                    <div style={{ height: 5, borderRadius: 20, width: `${p}%`, background: `linear-gradient(90deg, ${C.p2}, ${C.p1})` }} />
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                    <span style={{ color: C.p2, fontWeight: 700 }}>{p.toFixed(0)}%</span>
+                    <span style={{ color: C.dim }}>NT$ {fmt(g.target)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {/* Yearly spending */}
+      {yearBills.length > 0 && (
+        <Card>
+          <div style={{ fontSize: 12, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
+            💳 {thisY} 共同支出 — 合計 NT$ {fmt(yearTotal)}
+          </div>
+          <div style={{ color: C.dim, fontSize: 12, marginBottom: 12 }}>月均 NT$ {fmt(yearTotal / yearBills.length)}</div>
+          <div style={{ display: "flex", gap: 5, alignItems: "flex-end", height: 70 }}>
+            {yearBills.sort((a, b) => a.month.localeCompare(b.month)).map(b => {
+              const h = Math.max(6, (b.amount / Math.max(...yearBills.map(x => x.amount))) * 58);
+              return (
+                <div key={b.id} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+                  <div style={{ fontSize: 9, color: C.dim }}>{fmt(b.amount / 1000, 0)}k</div>
+                  <div style={{ width: "100%", background: C.gold, borderRadius: "3px 3px 0 0", height: h, opacity: 0.8 }} />
+                  <div style={{ fontSize: 9, color: C.dim }}>{b.month.slice(5)}月</div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─── App ─────────────────────────────────────────────────────────────────────
+export default function App() {
+  const [p1Name, setP1Name] = useStorage("ff2_p1name", "Lois");
+  const [p2Name, setP2Name] = useStorage("ff2_p2name", "Lisa");
+  const [p1Stocks, setP1Stocks] = useStorage("ff2_p1stocks", []);
+  const [p2Stocks, setP2Stocks] = useStorage("ff2_p2stocks", []);
+  const [p1Trades, setP1Trades] = useStorage("ff2_p1trades", []);
+  const [p2Trades, setP2Trades] = useStorage("ff2_p2trades", []);
+  const [p1Assets, setP1Assets] = useStorage("ff2_p1assets", []);
+  const [p2Assets, setP2Assets] = useStorage("ff2_p2assets", []);
+  const [shared, setShared] = useStorage("ff2_shared", { cashBalance: 0, rentIncome: [], bills: [] });
+  const [goals, setGoals] = useStorage("ff2_goals", []);
+  const [p1Debts, setP1Debts] = useStorage("ff2_p1debts", []);
+  const [p2Debts, setP2Debts] = useStorage("ff2_p2debts", []);
+  const [p1Cash, setP1Cash] = useStorage("ff2_p1cash", { income: [], expenses: [] });
+  const [p2Cash, setP2Cash] = useStorage("ff2_p2cash", { income: [], expenses: [] });
+  const [tab, setTab] = useState("overview");
+  const [editName, setEditName] = useState(false);
+
+  const calcGross = (stocks, assets, usdRate = 32) => {
+    const sv = stocks.reduce((s, x) => s + (x.livePrice || x.avgCost) * x.shares, 0);
+    const av = assets.reduce((s, a) => {
+      if (a.currency === "USD") return s + (a.usdAmount || 0) * usdRate;
+      return s + (a.value || 0);
+    }, 0);
+    return sv + av;
+  };
+  const [usdRateApp, setUsdRateApp] = useStorage("ff2_usdrate", 32);
+  // refresh USD/TWD rate on mount
+  useEffect(() => {
+    fetchPrice("USDTWD=X","US").then(r => { if (r?.price) setUsdRateApp(Math.round(r.price * 100)/100); });
+  }, []);
+  const p1Gross = calcGross(p1Stocks, p1Assets, usdRateApp);
+  const p2Gross = calcGross(p2Stocks, p2Assets, usdRateApp);
+  const p1TotalDebt = p1Debts.reduce((s, d) => s + (d.remaining || 0), 0);
+  const p2TotalDebt = p2Debts.reduce((s, d) => s + (d.remaining || 0), 0);
+  const p1NW = p1Gross - p1TotalDebt;
+  const p2NW = p2Gross - p2TotalDebt;
+  const sharedBills = shared.bills || [];
+  const sharedRent = (shared.rentIncome || []).reduce((s,r) => s + (r.amount||0), 0);
+  const thisMonthBill = sharedBills.filter(b => b.month === now()).reduce((s, b) => s + b.amount, 0);
+  const sharedCash = shared.cashBalance || 0;
+
+  const tabs = [
+    { id: "overview", label: "總覽" },
+    { id: "p1", label: p1Name, color: C.p1 },
+    { id: "p2", label: p2Name, color: C.p2 },
+    { id: "bills", label: "共同支出", color: C.gold },
+    { id: "goals", label: "目標", color: C.p2 },
+  ];
+
+  return (
+    <div style={{ background: C.bg, minHeight: "100vh", color: C.text,
+      fontFamily: "'Noto Sans TC', 'PingFang TC', 'Helvetica Neue', sans-serif", paddingBottom: 60 }}>
+
+      {/* Header */}
+      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "18px 28px 0", position: "sticky", top: 0, zIndex: 20 }}>
+        <div style={{ maxWidth: 1120, margin: "0 auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div>
+              <div style={{ fontSize: 10, color: C.dim, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 }}>家庭財務儀表板</div>
+              {editName ? (
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input value={p1Name} onChange={e => setP1Name(e.target.value)}
+                    style={{ background: "transparent", border: `1px solid ${C.p1}`, borderRadius: 4, color: C.p1, padding: "3px 8px", fontSize: 17, fontWeight: 800, width: 90, outline: "none" }} />
+                  <span style={{ color: C.dim, fontSize: 14 }}>&</span>
+                  <input value={p2Name} onChange={e => setP2Name(e.target.value)}
+                    style={{ background: "transparent", border: `1px solid ${C.p2}`, borderRadius: 4, color: C.p2, padding: "3px 8px", fontSize: 17, fontWeight: 800, width: 90, outline: "none" }} />
+                  <Btn small color={C.p1} onClick={() => setEditName(false)}>✓ 完成</Btn>
+                </div>
+              ) : (
+                <div style={{ fontSize: 18, fontWeight: 800, cursor: "pointer" }} onClick={() => setEditName(true)}>
+                  <span style={{ color: C.p1 }}>{p1Name}</span>
+                  <span style={{ color: C.dim, margin: "0 8px" }}>&</span>
+                  <span style={{ color: C.p2 }}>{p2Name}</span>
+                  <span style={{ fontSize: 10, color: C.dimmer, marginLeft: 6 }}>✎</span>
+                </div>
+              )}
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 10, color: C.dim, marginBottom: 3 }}>家庭總淨資產</div>
+              <div style={{ fontSize: 28, fontWeight: 900, color: C.text, letterSpacing: -1 }}>
+                NT$ {fmt(p1NW + p2NW + sharedCash)}
+              </div>
+            </div>
+          </div>
+
+          {/* Tabs */}
+          <div style={{ display: "flex", gap: 2 }}>
+            {tabs.map(t => (
+              <button key={t.id} onClick={() => setTab(t.id)} style={{
+                background: tab === t.id ? C.card : "transparent",
+                border: "none", borderBottom: tab === t.id ? `2px solid ${t.color || C.p1}` : "2px solid transparent",
+                color: tab === t.id ? (t.color || C.text) : C.dim,
+                padding: "8px 16px", fontSize: 13, fontWeight: tab === t.id ? 700 : 400,
+                cursor: "pointer", borderRadius: "6px 6px 0 0", transition: "all 0.15s",
+              }}>{t.label}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div style={{ maxWidth: 1120, margin: "24px auto", padding: "0 28px" }}>
+        {tab === "overview" && <Overview p1Name={p1Name} p2Name={p2Name} p1NW={p1NW} p2NW={p2NW} p1Gross={p1Gross} p2Gross={p2Gross} p1Debt={p1TotalDebt} p2Debt={p2TotalDebt} monthBill={thisMonthBill} goals={goals} bills={sharedBills} p1Cash={p1Cash} p2Cash={p2Cash} sharedCash={sharedCash} sharedRent={sharedRent} thisMonthBill={thisMonthBill} usdRate={usdRateApp} />}
+
+        {tab === "p1" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <CashflowPanel name={p1Name} color={C.p1} cashflow={p1Cash} setCashflow={setP1Cash} />
+            <StockPanel name={p1Name} color={C.p1} stocks={p1Stocks} setStocks={setP1Stocks} trades={p1Trades} setTrades={setP1Trades} />
+            <AssetsPanel name={p1Name} color={C.p1} assets={p1Assets} setAssets={setP1Assets} usdRate={usdRateApp} />
+            <DebtsPanel name={p1Name} color={C.p1} debts={p1Debts} setDebts={setP1Debts} gross={p1Gross} />
+          </div>
+        )}
+
+        {tab === "p2" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <CashflowPanel name={p2Name} color={C.p2} cashflow={p2Cash} setCashflow={setP2Cash} />
+            <StockPanel name={p2Name} color={C.p2} stocks={p2Stocks} setStocks={setP2Stocks} trades={p2Trades} setTrades={setP2Trades} />
+            <AssetsPanel name={p2Name} color={C.p2} assets={p2Assets} setAssets={setP2Assets} usdRate={usdRateApp} />
+            <DebtsPanel name={p2Name} color={C.p2} debts={p2Debts} setDebts={setP2Debts} gross={p2Gross} />
+          </div>
+        )}
+
+        {tab === "bills" && <SharedAccountPanel shared={shared} setShared={setShared} />}
+        {tab === "goals" && <GoalsPanel goals={goals} setGoals={setGoals} />}
+      </div>
+    </div>
+  );
+}
