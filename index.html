@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Lois & Lisa 家庭財務</title>
+  <title>Lois &amp; Lisa 家庭財務</title>
   <meta name="theme-color" content="#090b10" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -17,101 +17,75 @@
     #root { min-height: 100vh; }
     input, select, button { font-family: inherit; }
   </style>
+  <!-- Load React, ReactDOM, Babel synchronously before body -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Firebase v9 compat (works as global scripts, no import needed) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 </head>
 <body>
   <div id="root"></div>
 
-  <!-- Firebase SDKs -->
-  <script type="module">
-    // ── Firebase ──────────────────────────────────────────────────────────────
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-
-    // ── React + Babel via esm.sh ──────────────────────────────────────────────
-    const React = await import("https://esm.sh/react@18");
-    const { createRoot } = await import("https://esm.sh/react-dom@18/client");
+  <script type="text/babel">
     const { useState, useEffect, useCallback, useRef } = React;
 
-    // Make React hooks available globally for the app code below
-    window.__React = React;
-    window.__firebase = { initializeApp, getFirestore, doc, setDoc, onSnapshot };
-    window.__reactDom = { createRoot };
-  </script>
+    // ── Firebase setup (compat mode — works as global) ─────────────────────
+    // 👇 填入你的 Firebase 設定碼（從 Firebase Console 複製）
+    const FIREBASE_CONFIG = {
+      apiKey: "AIzaSyC64gtkUHlvE-GJlNz0fowOcPO50gffZGo",
+      authDomain: "lois-lisa-finance.firebaseapp.com",
+      projectId: "lois-lisa-finance",
+      storageBucket: "lois-lisa-finance.firebasestorage.app",
+      messagingSenderId: "277505966876",
+      appId: "1:277505966876:web:d72aa53ca998d9f5a1f0d9",
+    };
+    const FAMILY_DOC_ID = "lois-lisa";
 
-  <!-- App (Babel transpiled) -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script type="text/babel" data-presets="react">
-    const { useState, useEffect, useCallback, useRef } = window.__React;
-    const { initializeApp } = window.__firebase;
-    const { getFirestore, doc, setDoc, onSnapshot } = window.__firebase;
-    const { createRoot } = window.__reactDom;
+    let db = null;
+    try {
+      if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+      db = firebase.firestore();
+    } catch(e) { console.warn("Firebase init failed", e); }
 
+    // ── Storage Hook ────────────────────────────────────────────────────────
+    function useStorage(key, def) {
+      const [val, setVal] = useState(() => {
+        try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : def; } catch { return def; }
+      });
 
-// ─── Firebase Config ──────────────────────────────────────────────────────────
-// 👇 Replace this with YOUR Firebase config (see setup guide)
-const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyC64gtkUHlvE-GJlNz0fowOcPO50gffZGo",
-  authDomain: "lois-lisa-finance.firebaseapp.com",
-  projectId: "lois-lisa-finance",
-  storageBucket: "lois-lisa-finance.firebasestorage.app",
-  messagingSenderId: "277505966876",
-  appId: "1:277505966876:web:d72aa53ca998d9f5a1f0d9",
-};
-const FAMILY_DOC_ID = "lois-lisa"; // unique ID for your family data
+      useEffect(() => {
+        if (!db || !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey.startsWith("PASTE")) return;
+        const unsub = db.collection("family").doc(FAMILY_DOC_ID)
+          .onSnapshot((snap) => {
+            if (snap.exists) {
+              const data = snap.data();
+              if (data && data[key] !== undefined) {
+                try {
+                  const parsed = typeof data[key] === "string" ? JSON.parse(data[key]) : data[key];
+                  setVal(parsed);
+                  localStorage.setItem(key, JSON.stringify(parsed));
+                } catch(e) {}
+              }
+            }
+          }, (err) => console.warn("Firebase read error", err));
+        return unsub;
+      }, [key]);
 
-let db = null;
-try {
-  const app = initializeApp(FIREBASE_CONFIG);
-  db = getFirestore(app);
-} catch (e) {
-  console.warn("Firebase init failed, using localStorage fallback", e);
-}
-
-// ─── Storage Hook (Firebase + localStorage fallback) ──────────────────────────
-// Reads from Firebase on mount, syncs writes to Firebase and localStorage.
-// If Firebase is not configured, falls back to localStorage only.
-function useStorage(key, def) {
-  const [val, setVal] = useState(() => {
-    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : def; } catch { return def; }
-  });
-  const [synced, setSynced] = useState(false);
-
-  // Subscribe to Firebase realtime updates
-  useEffect(() => {
-    if (!db || !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey.startsWith("PASTE")) return;
-    const ref = doc(db, "family", FAMILY_DOC_ID);
-    const unsub = onSnapshot(ref, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        if (data[key] !== undefined) {
-          const parsed = typeof data[key] === "string" ? JSON.parse(data[key]) : data[key];
-          setVal(parsed);
-          try { localStorage.setItem(key, JSON.stringify(parsed)); } catch {}
+      const save = useCallback((v) => {
+        const next = typeof v === "function" ? v(val) : v;
+        setVal(next);
+        try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+        if (db && FIREBASE_CONFIG.apiKey && !FIREBASE_CONFIG.apiKey.startsWith("PASTE")) {
+          db.collection("family").doc(FAMILY_DOC_ID)
+            .set({ [key]: JSON.stringify(next) }, { merge: true })
+            .catch(e => console.warn("Firebase write error", e));
         }
-      }
-      setSynced(true);
-    }, (err) => {
-      console.warn("Firebase read error", err);
-      setSynced(true);
-    });
-    return unsub;
-  }, [key]);
+      }, [key, val]);
 
-  const save = useCallback((v) => {
-    const next = typeof v === "function" ? v(val) : v;
-    setVal(next);
-    // Always save to localStorage as backup
-    try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
-    // Save to Firebase if configured
-    if (db && FIREBASE_CONFIG.apiKey && !FIREBASE_CONFIG.apiKey.startsWith("PASTE")) {
-      const ref = doc(db, "family", FAMILY_DOC_ID);
-      setDoc(ref, { [key]: JSON.stringify(next) }, { merge: true })
-        .catch(e => console.warn("Firebase write error", e));
+      return [val, save];
     }
-  }, [key, val]);
-
-  return [val, save];
-}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const C = {
@@ -1524,9 +1498,7 @@ function App() {
 }
 
 
-    // Mount app
-    const container = document.getElementById("root");
-    createRoot(container).render(React.createElement(App));
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
   </script>
 </body>
 </html>
