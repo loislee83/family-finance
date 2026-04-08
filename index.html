@@ -253,6 +253,8 @@ function StockPanel({ name, color, stocks, setStocks, usdRate = 32 }) {
   const [shares, setShares] = useState("");
   const [fetching, setFetching] = useState({});
   const [fetchingAll, setFetchingAll] = useState(false);
+  const [editSharesId, setEditSharesId] = useState(null);
+  const [editSharesVal, setEditSharesVal] = useState("");
   const usdTwd = usdRate; // use shared rate from App
 
   const refreshPrice = async (s) => {
@@ -340,15 +342,37 @@ function StockPanel({ name, color, stocks, setStocks, usdRate = 32 }) {
           {stocks.map(s => {
             const mv = stockMV(s);
             const tsAge = s.liveTs ? Math.round((Date.now() - s.liveTs) / 60000) : null;
+            const isEditing = editSharesId === s.id;
             return (
-              <div key={s.id} style={{ display: "grid", gridTemplateColumns: "auto 1fr 70px 80px 90px 36px",
+              <div key={s.id} style={{ display: "grid", gridTemplateColumns: "auto 1fr 110px 80px 90px 36px",
                 gap: 6, alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
                 <Tag color={s.market === "TW" ? C.p1 : C.gold}>{s.market}</Tag>
                 <div>
                   <div style={{ fontWeight: 700, color: C.text }}>{s.name}</div>
                   <div style={{ color: C.dim, fontSize: 10 }}>{s.ticker}</div>
                 </div>
-                <div style={{ textAlign: "right", color: C.dim }}>{fmt(s.shares, 0)}</div>
+                {/* 股數 — 可點擊編輯 */}
+                <div style={{ textAlign: "right" }}>
+                  {isEditing ? (
+                    <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
+                      <input type="number" value={editSharesVal} onChange={e => setEditSharesVal(e.target.value)}
+                        autoFocus
+                        style={{ background: C.bg, border: `1px solid ${color}`, borderRadius: 5,
+                          color: C.text, padding: "3px 6px", fontSize: 12, width: 70, outline: "none", textAlign: "right" }} />
+                      <Btn small color={color} onClick={() => {
+                        setStocks(stocks.map(x => x.id === s.id ? { ...x, shares: +editSharesVal } : x));
+                        setEditSharesId(null);
+                      }}>✓</Btn>
+                      <Btn small color={C.dim} onClick={() => setEditSharesId(null)}>✕</Btn>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", alignItems: "center", cursor: "pointer" }}
+                      onClick={() => { setEditSharesId(s.id); setEditSharesVal(String(s.shares)); }}>
+                      <span style={{ color: C.dim }}>{fmt(s.shares, 0)}</span>
+                      <span style={{ fontSize: 10, color: C.dimmer }}>✎</span>
+                    </div>
+                  )}
+                </div>
                 <div style={{ textAlign: "right", color: s.livePrice ? C.text : C.dimmer }}>
                   {s.livePrice
                     ? (s.market === "US" ? fmtUSD(s.livePrice) : fmt(s.livePrice, 2))
