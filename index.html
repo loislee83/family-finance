@@ -1202,7 +1202,20 @@ function GoalsPanel({ goals, setGoals }) {
 // Monthly income/expense log — per month entries, yearly savings rate
 function CashflowPanel({ name, color, cashflow, setCashflow }) {
   // cashflow = { months: [ { id, month, income: [...], expenses: [...] } ] }
-  const months = cashflow.months || [];
+  // Support both old format {income,expenses} and new format {months:[...]}
+  const rawMonths = cashflow.months || [];
+  // Migrate old format if needed: old format had cashflow.income/expenses directly
+  const months = React.useMemo(() => {
+    if (rawMonths.length > 0) return rawMonths;
+    if ((cashflow.income && cashflow.income.length > 0) || (cashflow.expenses && cashflow.expenses.length > 0)) {
+      // Old format — treat as last month's data
+      const lastM = new Date();
+      lastM.setMonth(lastM.getMonth() - 1);
+      const mStr = lastM.toISOString().slice(0,7);
+      return [{ id: mStr, month: mStr, income: cashflow.income || [], expenses: cashflow.expenses || [] }];
+    }
+    return [];
+  }, [rawMonths, cashflow.income, cashflow.expenses]);
   const thisY = String(new Date().getFullYear());
   const [selMonth, setSelMonth] = useState(now());
   const [iLabel, setILabel] = useState("");
@@ -1258,6 +1271,16 @@ function CashflowPanel({ name, color, cashflow, setCashflow }) {
 
   const curInc = cur.income.reduce((s,x) => s + x.amount, 0);
   const curExp = cur.expenses.reduce((s,x) => s + x.amount, 0);
+
+  // Last month reference
+  const lastMonthRef = (() => {
+    const d = new Date(selMonth + "-01");
+    d.setMonth(d.getMonth() - 1);
+    const lm = d.toISOString().slice(0,7);
+    return months.find(m => m.month === lm);
+  })();
+  const lastInc = lastMonthRef ? lastMonthRef.income.reduce((s,x) => s+x.amount, 0) : null;
+  const lastExp = lastMonthRef ? lastMonthRef.expenses.reduce((s,x) => s+x.amount, 0) : null;
   const curSur = curInc - curExp;
   const curRate = curInc > 0 ? (curSur / curInc) * 100 : null;
 
@@ -1271,7 +1294,9 @@ function CashflowPanel({ name, color, cashflow, setCashflow }) {
   const rateColor = (r) => r === null ? C.dim : r >= 30 ? C.p1 : r >= 15 ? C.gold : C.red;
 
   // Month selector — show months that have data + current month
-  const allMonths = [...new Set([...months.map(m => m.month), now()])].sort().reverse();
+  // Always include last month for reference
+  const lastMonthStr = (() => { const d = new Date(); d.setMonth(d.getMonth()-1); return d.toISOString().slice(0,7); })();
+  const allMonths = [...new Set([...months.map(m => m.month), now(), lastMonthStr])].sort().reverse();
 
   return (
     <Card accent={color + "88"}>
@@ -1330,6 +1355,25 @@ function CashflowPanel({ name, color, cashflow, setCashflow }) {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Last month reference */}
+      {lastMonthRef && (curInc === 0 || curExp === 0) && (
+        <div style={{ background: C.surface, borderRadius: 8, padding: 10, border: `1px solid ${C.border}`, marginBottom: 12 }}>
+          <div style={{ fontSize: 10, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+            📋 {lastMonthRef.month} 參考
+          </div>
+          <div style={{ display: "flex", gap: 16, fontSize: 12 }}>
+            <span style={{ color: C.p1 }}>收入 +{fmt(lastInc)}</span>
+            <span style={{ color: C.red }}>支出 {fmt(lastExp)}</span>
+            <span style={{ color: lastInc - lastExp >= 0 ? color : C.red }}>
+              結餘 {lastInc - lastExp >= 0 ? "+" : ""}{fmt(lastInc - lastExp)}
+            </span>
+            {lastInc > 0 && <span style={{ color: rateColor(((lastInc-lastExp)/lastInc)*100) }}>
+              儲蓄率 {(((lastInc-lastExp)/lastInc)*100).toFixed(1)}%
+            </span>}
+          </div>
         </div>
       )}
 
@@ -1519,9 +1563,16 @@ function Overview({ p1Name, p2Name, p1NW, p2NW, p1Gross, p2Gross, p1Debt, p2Debt
         const thisM = now();
         const thisYr = String(new Date().getFullYear());
         const getYearStats = (cash) => {
-          const yms = (cash.months || []).filter(m => m.month.startsWith(thisYr));
-          const inc = yms.reduce((s,m) => s + m.income.reduce((ss,x) => ss+x.amount,0), 0);
-          const exp = yms.reduce((s,m) => s + m.expenses.reduce((ss,x) => ss+x.amount,0), 0);
+          // Handle new format {months:[...]}
+          if (cash.months && cash.months.length > 0) {
+            const yms = cash.months.filter(m => m.month.startsWith(thisYr));
+            const inc = yms.reduce((s,m) => s + m.income.reduce((ss,x) => ss+x.amount,0), 0);
+            const exp = yms.reduce((s,m) => s + m.expenses.reduce((ss,x) => ss+x.amount,0), 0);
+            return { inc, exp };
+          }
+          // Handle old format {income:[...], expenses:[...]}
+          const inc = (cash.income || []).reduce((s,x) => s+x.amount, 0);
+          const exp = (cash.expenses || []).reduce((s,x) => s+x.amount, 0);
           return { inc, exp };
         };
         const p1yr = getYearStats(p1Cash); const p1Inc = p1yr.inc; const p1Exp = p1yr.exp;
@@ -1574,30 +1625,37 @@ function Overview({ p1Name, p2Name, p1NW, p2NW, p1Gross, p2Gross, p1Debt, p2Debt
                         年儲蓄率 <span style={{ color: rate >= 20 ? C.p1 : rate >= 10 ? C.gold : C.red, fontWeight: 700 }}>{rate.toFixed(1)}%</span>
                       </div>
                     )}
-                    {/* Expense breakdown */}
-                    {(cash.expenses || []).length > 0 && (
-                      <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-                        <div style={{ fontSize: 10, color: C.dimmer, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>支出明細</div>
-                        {(cash.expenses || []).map(x => (
-                          <div key={x.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, paddingBottom: 3 }}>
-                            <span style={{ color: C.dim }}>{x.label}{x.note ? <span style={{ color: C.dimmer }}> · {x.note}</span> : ""}</span>
-                            <span style={{ color: C.text }}>NT$ {fmt(x.amount)}</span>
+                    {/* Show recent month breakdown — latest month from new format, or old format */}
+                    {(() => {
+                      const recentMonth = (cash.months || []).sort((a,b) => b.month.localeCompare(a.month))[0];
+                      const exps = recentMonth ? recentMonth.expenses : (cash.expenses || []);
+                      const incs = recentMonth ? recentMonth.income : (cash.income || []);
+                      const mLabel = recentMonth ? recentMonth.month : "";
+                      return (<>
+                        {exps.length > 0 && (
+                          <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+                            <div style={{ fontSize: 10, color: C.dimmer, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>支出明細{mLabel ? ` · ${mLabel}` : ""}</div>
+                            {exps.map(x => (
+                              <div key={x.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, paddingBottom: 3 }}>
+                                <span style={{ color: C.dim }}>{x.label}{x.note ? <span style={{ color: C.dimmer }}> · {x.note}</span> : ""}</span>
+                                <span style={{ color: C.text }}>NT$ {fmt(x.amount)}</span>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
-                    )}
-                    {/* Income breakdown */}
-                    {(cash.income || []).length > 0 && (
-                      <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8, marginTop: 4 }}>
-                        <div style={{ fontSize: 10, color: C.dimmer, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>收入明細</div>
-                        {(cash.income || []).map(x => (
-                          <div key={x.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, paddingBottom: 3 }}>
-                            <span style={{ color: C.dim }}>{x.label}{x.note ? <span style={{ color: C.dimmer }}> · {x.note}</span> : ""}</span>
-                            <span style={{ color: C.p1 }}>+NT$ {fmt(x.amount)}</span>
+                        )}
+                        {incs.length > 0 && (
+                          <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8, marginTop: 4 }}>
+                            <div style={{ fontSize: 10, color: C.dimmer, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>收入明細{mLabel ? ` · ${mLabel}` : ""}</div>
+                            {incs.map(x => (
+                              <div key={x.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, paddingBottom: 3 }}>
+                                <span style={{ color: C.dim }}>{x.label}{x.note ? <span style={{ color: C.dimmer }}> · {x.note}</span> : ""}</span>
+                                <span style={{ color: C.p1 }}>+NT$ {fmt(x.amount)}</span>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
-                    )}
+                        )}
+                      </>);
+                    })()}
                   </div>
                 );
               })}
