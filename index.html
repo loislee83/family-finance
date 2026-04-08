@@ -41,6 +41,7 @@
       messagingSenderId: "277505966876",
       appId: "1:277505966876:web:d72aa53ca998d9f5a1f0d9",
     };
+
     const FAMILY_DOC_ID = "lois-lisa";
 
     let db = null;
@@ -867,6 +868,13 @@ function SharedAccountPanel({ shared, setShared }) {
   const [billNote, setBillNote] = useState("");
   const [billEditId, setBillEditId] = useState(null);
 
+  // ── cash expense form ──
+  const cashExpenses = shared.cashExpenses || [];
+  const [cashMonth, setCashMonth] = useState(now());
+  const [cashAmt, setCashAmt] = useState("");
+  const [cashNote, setCashNote] = useState("");
+  const [cashEditId, setCashEditId] = useState(null);
+
   const saveCash = () => {
     setShared({ ...shared, cashBalance: +cashDraft || 0 });
     setEditingCash(false);
@@ -896,16 +904,36 @@ function SharedAccountPanel({ shared, setShared }) {
   const startBillEdit = (b) => { setBillEditId(b.id); setMonth(b.month); setBillAmt(String(b.amount)); setBillNote(b.note||""); };
   const delBill = (id) => setShared({ ...shared, bills: bills.filter(b => b.id !== id) });
 
+  const addCashExp = () => {
+    if (!cashAmt) return;
+    const updated = cashEditId
+      ? cashExpenses.map(c => c.id === cashEditId ? { ...c, month: cashMonth, amount: +cashAmt, note: cashNote } : c)
+      : [{ id: Date.now(), month: cashMonth, amount: +cashAmt, note: cashNote }, ...cashExpenses];
+    setShared({ ...shared, cashExpenses: updated });
+    setCashAmt(""); setCashNote(""); setCashEditId(null);
+  };
+  const startCashEdit = (c) => { setCashEditId(c.id); setCashMonth(c.month); setCashAmt(String(c.amount)); setCashNote(c.note||""); };
+  const delCashExp = (id) => setShared({ ...shared, cashExpenses: cashExpenses.filter(c => c.id !== id) });
+
   const sortedBills = [...bills].sort((a,b) => b.month.localeCompare(a.month));
+  const sortedCash = [...cashExpenses].sort((a,b) => b.month.localeCompare(a.month));
   const thisMonthBill = bills.filter(b => b.month === now()).reduce((s,b) => s + b.amount, 0);
+  const thisMonthCash = cashExpenses.filter(c => c.month === now()).reduce((s,c) => s + c.amount, 0);
   const thisY = String(new Date().getFullYear());
   const yearTotal = bills.filter(b => b.month.startsWith(thisY)).reduce((s,b) => s + b.amount, 0);
-  const monthAvg = bills.length ? bills.reduce((s,b) => s+b.amount, 0) / bills.length : 0;
+  const yearCashTotal = cashExpenses.filter(c => c.month.startsWith(thisY)).reduce((s,c) => s + c.amount, 0);
+  const monthAvg = (bills.length || cashExpenses.length)
+    ? (bills.reduce((s,b) => s+b.amount, 0) + cashExpenses.reduce((s,c) => s+c.amount, 0)) / Math.max(bills.length, cashExpenses.length, 1)
+    : 0;
   const last6 = sortedBills.slice(0,6).reverse();
-  const maxB = Math.max(...last6.map(b => b.amount), 1);
+  const maxB6 = Math.max(...last6.map(b => {
+    const cashAmt = cashExpenses.filter(c => c.month === b.month).reduce((s,c) => s+c.amount, 0);
+    return b.amount + cashAmt;
+  }), 1);
+  const maxB = maxB6;
 
   // monthly cashflow of shared account
-  const monthlyNet = totalRent - thisMonthBill;
+  const monthlyNet = totalRent - thisMonthBill - thisMonthCash;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -968,67 +996,115 @@ function SharedAccountPanel({ shared, setShared }) {
           </div>
           <div style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>
             租金 <span style={{ color: C.p2 }}>+{fmt(totalRent)}</span>
-            {" "}－ 帳單 <span style={{ color: C.gold }}>{fmt(thisMonthBill)}</span>
+            {" "}－ 卡費 <span style={{ color: C.gold }}>{fmt(thisMonthBill)}</span>
+            {thisMonthCash > 0 && <> － 現金 <span style={{ color: C.p1 }}>{fmt(thisMonthCash)}</span></>}
           </div>
         </Card>
       </div>
 
-      {/* ── Bill section ── */}
+      {/* ── Bill + Cash Expense section ── */}
       <Card accent={C.gold}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
           <div>
             <div style={{ fontSize: 11, color: C.dim, letterSpacing: 1, textTransform: "uppercase", marginBottom: 3 }}>共同支出</div>
-            <div style={{ fontSize: 16, fontWeight: 800, color: C.gold }}>💳 共同信用卡帳單</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: C.gold }}>💳 信用卡 ＋ 💵 現金</div>
           </div>
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 11, color: C.dim }}>今年合計</div>
-            <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>NT$ {fmt(yearTotal)}</div>
+            <div style={{ fontSize: 11, color: C.dim }}>今年合計（卡+現金）</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: C.text }}>NT$ {fmt(yearTotal + yearCashTotal)}</div>
             <div style={{ fontSize: 11, color: C.dim }}>月均 NT$ {fmt(monthAvg)}</div>
           </div>
         </div>
 
+        {/* Bar chart — combined */}
         {last6.length > 0 && (
           <div style={{ display: "flex", gap: 6, alignItems: "flex-end", height: 56, marginBottom: 14 }}>
-            {last6.map(b => (
-              <div key={b.id} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-                <div style={{ fontSize: 9, color: C.dim }}>{fmt(b.amount/1000)}k</div>
-                <div style={{ width: "100%", background: C.gold, borderRadius: "3px 3px 0 0", opacity: 0.85,
-                  height: Math.max(4, (b.amount/maxB)*40) }} />
-                <div style={{ fontSize: 9, color: C.dim }}>{b.month.slice(5)}</div>
-              </div>
-            ))}
+            {last6.map(b => {
+              const cashAmt = (cashExpenses.filter(c => c.month === b.month).reduce((s,c) => s+c.amount, 0));
+              const total6 = b.amount + cashAmt;
+              return (
+                <div key={b.id} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+                  <div style={{ fontSize: 9, color: C.dim }}>{fmt(total6/1000)}k</div>
+                  <div style={{ width: "100%", borderRadius: "3px 3px 0 0", overflow: "hidden",
+                    height: Math.max(4, (total6/maxB6)*40) }}>
+                    <div style={{ width: "100%", height: "60%", background: C.gold, opacity: 0.85 }} />
+                    <div style={{ width: "100%", height: "40%", background: C.p1, opacity: 0.7 }} />
+                  </div>
+                  <div style={{ fontSize: 9, color: C.dim }}>{b.month.slice(5)}</div>
+                </div>
+              );
+            })}
           </div>
         )}
 
-        <div style={{ background: C.surface, borderRadius: 8, padding: 12, border: `1px solid ${C.border}`, marginBottom: 12 }}>
-          <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
-            {billEditId ? "編輯帳單" : "輸入月帳單"}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "140px 1fr 1fr auto", gap: 7 }}>
-            <Inp value={month} onChange={setMonth} type="month" />
-            <Inp value={billAmt} onChange={setBillAmt} placeholder="帳單金額 (NT$)" type="number" />
-            <Inp value={billNote} onChange={setBillNote} placeholder="備注（如：含旅費）" />
-            <Btn onClick={addBill} color={C.gold}>{billEditId ? "更新" : "記錄"}</Btn>
-          </div>
-          {billEditId && <Btn small color={C.dim} onClick={() => { setBillEditId(null); setBillAmt(""); setBillNote(""); }} style={{ marginTop: 7 }}>取消編輯</Btn>}
-        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
 
-        <div style={{ maxHeight: 260, overflowY: "auto" }}>
-          {sortedBills.length === 0 && <div style={{ color: C.dim, fontSize: 13, textAlign: "center", padding: "16px 0" }}>尚無帳單紀錄</div>}
-          {sortedBills.map(b => (
-            <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
-              padding: "9px 0", borderBottom: `1px solid ${C.border}`, fontSize: 13 }}>
-              <div>
-                <span style={{ fontWeight: 700, color: C.text, marginRight: 10 }}>{b.month}</span>
-                {b.note && <span style={{ color: C.dim, fontSize: 11 }}>{b.note}</span>}
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontWeight: 800, fontSize: 14, color: C.gold }}>NT$ {fmt(b.amount)}</span>
-                <Btn small color={C.p2} onClick={() => startBillEdit(b)}>編輯</Btn>
-                <Btn small color={C.red} onClick={() => delBill(b.id)}>✕</Btn>
+          {/* ── 信用卡帳單 ── */}
+          <div>
+            <div style={{ fontSize: 11, color: C.gold, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+              💳 信用卡帳單
+            </div>
+            <div style={{ background: C.surface, borderRadius: 8, padding: 10, border: `1px solid ${C.border}`, marginBottom: 8 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <Inp value={month} onChange={setMonth} type="month" />
+                <Inp value={billAmt} onChange={setBillAmt} placeholder="帳單金額 (NT$)" type="number" />
+                <Inp value={billNote} onChange={setBillNote} placeholder="備注（如：含旅費）" />
+                <Btn onClick={addBill} color={C.gold} full>{billEditId ? "更新" : "記錄帳單"}</Btn>
+                {billEditId && <Btn small color={C.dim} onClick={() => { setBillEditId(null); setBillAmt(""); setBillNote(""); }} full>取消</Btn>}
               </div>
             </div>
-          ))}
+            <div style={{ maxHeight: 220, overflowY: "auto" }}>
+              {sortedBills.length === 0 && <div style={{ color: C.dim, fontSize: 12, textAlign: "center", padding: "12px 0" }}>尚無紀錄</div>}
+              {sortedBills.map(b => (
+                <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "7px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
+                  <div>
+                    <span style={{ fontWeight: 700, color: C.text, marginRight: 6 }}>{b.month}</span>
+                    {b.note && <span style={{ color: C.dim, fontSize: 10 }}>{b.note}</span>}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontWeight: 700, color: C.gold }}>NT$ {fmt(b.amount)}</span>
+                    <Btn small color={C.p2} onClick={() => startBillEdit(b)}>✎</Btn>
+                    <Btn small color={C.red} onClick={() => delBill(b.id)}>✕</Btn>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ── 現金支出 ── */}
+          <div>
+            <div style={{ fontSize: 11, color: C.p1, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+              💵 現金支出
+            </div>
+            <div style={{ background: C.surface, borderRadius: 8, padding: 10, border: `1px solid ${C.border}`, marginBottom: 8 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <Inp value={cashMonth} onChange={setCashMonth} type="month" />
+                <Inp value={cashAmt} onChange={setCashAmt} placeholder="現金支出 (NT$)" type="number" />
+                <Inp value={cashNote} onChange={setCashNote} placeholder="備注（如：市場買菜）" />
+                <Btn onClick={addCashExp} color={C.p1} full>{cashEditId ? "更新" : "記錄現金"}</Btn>
+                {cashEditId && <Btn small color={C.dim} onClick={() => { setCashEditId(null); setCashAmt(""); setCashNote(""); }} full>取消</Btn>}
+              </div>
+            </div>
+            <div style={{ maxHeight: 220, overflowY: "auto" }}>
+              {sortedCash.length === 0 && <div style={{ color: C.dim, fontSize: 12, textAlign: "center", padding: "12px 0" }}>尚無紀錄</div>}
+              {sortedCash.map(c => (
+                <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "7px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
+                  <div>
+                    <span style={{ fontWeight: 700, color: C.text, marginRight: 6 }}>{c.month}</span>
+                    {c.note && <span style={{ color: C.dim, fontSize: 10 }}>{c.note}</span>}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontWeight: 700, color: C.p1 }}>NT$ {fmt(c.amount)}</span>
+                    <Btn small color={C.p2} onClick={() => startCashEdit(c)}>✎</Btn>
+                    <Btn small color={C.red} onClick={() => delCashExp(c.id)}>✕</Btn>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
         </div>
       </Card>
     </div>
@@ -1123,186 +1199,237 @@ function GoalsPanel({ goals, setGoals }) {
 
 
 // ─── Cashflow Panel ───────────────────────────────────────────────────────────
-// Each person sets their monthly income + custom expense line items for partner visibility
+// Monthly income/expense log — per month entries, yearly savings rate
 function CashflowPanel({ name, color, cashflow, setCashflow }) {
-  // cashflow = { income: [...], expenses: [...] }
-  // income item: { id, label, amount, note }
-  // expense item: { id, label, amount, note }
-  const [showIncForm, setShowIncForm] = useState(false);
-  const [showExpForm, setShowExpForm] = useState(false);
+  // cashflow = { months: [ { id, month, income: [...], expenses: [...] } ] }
+  const months = cashflow.months || [];
+  const thisY = String(new Date().getFullYear());
+  const [selMonth, setSelMonth] = useState(now());
   const [iLabel, setILabel] = useState("");
-  const [iAmount, setIAmount] = useState("");
+  const [iAmt, setIAmt] = useState("");
   const [iNote, setINote] = useState("");
   const [eLabel, setELabel] = useState("");
-  const [eAmount, setEAmount] = useState("");
+  const [eAmt, setEAmt] = useState("");
   const [eNote, setENote] = useState("");
-  const [editingId, setEditingId] = useState(null);
-  const [editType, setEditType] = useState(null); // "income" | "expense"
 
-  const income = cashflow.income || [];
-  const expenses = cashflow.expenses || [];
-  const totalIncome = income.reduce((s, x) => s + (x.amount || 0), 0);
-  const totalExpenses = expenses.reduce((s, x) => s + (x.amount || 0), 0);
-  const surplus = totalIncome - totalExpenses;
-  const savingsRate = totalIncome > 0 ? (surplus / totalIncome) * 100 : null;
+  // Get or create month record
+  const getMonth = (m) => months.find(x => x.month === m) || { id: m, month: m, income: [], expenses: [] };
+  const saveMonth = (m, updated) => {
+    const exists = months.find(x => x.month === m);
+    if (exists) {
+      setCashflow({ ...cashflow, months: months.map(x => x.month === m ? updated : x) });
+    } else {
+      setCashflow({ ...cashflow, months: [...months, updated] });
+    }
+  };
+
+  const cur = getMonth(selMonth);
 
   const addIncome = () => {
-    if (!iLabel || !iAmount) return;
-    if (editingId && editType === "income") {
-      setCashflow({ ...cashflow, income: income.map(x => x.id === editingId ? { ...x, label: iLabel, amount: +iAmount, note: iNote } : x) });
-      setEditingId(null); setEditType(null);
-    } else {
-      setCashflow({ ...cashflow, income: [...income, { id: Date.now(), label: iLabel, amount: +iAmount, note: iNote }] });
-    }
-    setILabel(""); setIAmount(""); setINote(""); setShowIncForm(false);
+    if (!iLabel || !iAmt) return;
+    const updated = { ...cur, income: [...cur.income, { id: Date.now(), label: iLabel, amount: +iAmt, note: iNote }] };
+    saveMonth(selMonth, updated);
+    setILabel(""); setIAmt(""); setINote("");
   };
+  const delIncome = (id) => saveMonth(selMonth, { ...cur, income: cur.income.filter(x => x.id !== id) });
 
   const addExpense = () => {
-    if (!eLabel || !eAmount) return;
-    if (editingId && editType === "expense") {
-      setCashflow({ ...cashflow, expenses: expenses.map(x => x.id === editingId ? { ...x, label: eLabel, amount: +eAmount, note: eNote } : x) });
-      setEditingId(null); setEditType(null);
-    } else {
-      setCashflow({ ...cashflow, expenses: [...expenses, { id: Date.now(), label: eLabel, amount: +eAmount, note: eNote }] });
-    }
-    setELabel(""); setEAmount(""); setENote(""); setShowExpForm(false);
+    if (!eLabel || !eAmt) return;
+    const updated = { ...cur, expenses: [...cur.expenses, { id: Date.now(), label: eLabel, amount: +eAmt, note: eNote }] };
+    saveMonth(selMonth, updated);
+    setELabel(""); setEAmt(""); setENote("");
+  };
+  const delExpense = (id) => saveMonth(selMonth, { ...cur, expenses: cur.expenses.filter(x => x.id !== id) });
+
+  // Copy last month's items to current month as starting point
+  const copyFromLastMonth = () => {
+    const sorted = [...months].sort((a,b) => b.month.localeCompare(a.month));
+    const last = sorted.find(m => m.month < selMonth);
+    if (!last) return;
+    const exists = months.find(x => x.month === selMonth);
+    const base = exists || { id: selMonth, month: selMonth, income: [], expenses: [] };
+    const merged = {
+      ...base,
+      income: [...base.income, ...last.income.map(x => ({ ...x, id: Date.now() + Math.random() }))],
+      expenses: [...base.expenses, ...last.expenses.map(x => ({ ...x, id: Date.now() + Math.random() }))],
+    };
+    saveMonth(selMonth, merged);
   };
 
-  const startEdit = (item, type) => {
-    setEditingId(item.id); setEditType(type);
-    if (type === "income") { setILabel(item.label); setIAmount(String(item.amount)); setINote(item.note || ""); setShowIncForm(true); }
-    else { setELabel(item.label); setEAmount(String(item.amount)); setENote(item.note || ""); setShowExpForm(true); }
-  };
+  const curInc = cur.income.reduce((s,x) => s + x.amount, 0);
+  const curExp = cur.expenses.reduce((s,x) => s + x.amount, 0);
+  const curSur = curInc - curExp;
+  const curRate = curInc > 0 ? (curSur / curInc) * 100 : null;
 
-  const cancelEdit = () => { setEditingId(null); setEditType(null); setShowIncForm(false); setShowExpForm(false); setILabel(""); setIAmount(""); setINote(""); setELabel(""); setEAmount(""); setENote(""); };
+  // Yearly stats
+  const yearMonths = months.filter(m => m.month.startsWith(thisY));
+  const yearInc = yearMonths.reduce((s,m) => s + m.income.reduce((ss,x) => ss+x.amount, 0), 0);
+  const yearExp = yearMonths.reduce((s,m) => s + m.expenses.reduce((ss,x) => ss+x.amount, 0), 0);
+  const yearSur = yearInc - yearExp;
+  const yearRate = yearInc > 0 ? (yearSur / yearInc) * 100 : null;
 
-  const delIncome = (id) => setCashflow({ ...cashflow, income: income.filter(x => x.id !== id) });
-  const delExpense = (id) => setCashflow({ ...cashflow, expenses: expenses.filter(x => x.id !== id) });
+  const rateColor = (r) => r === null ? C.dim : r >= 30 ? C.p1 : r >= 15 ? C.gold : C.red;
 
-  const barMax = Math.max(totalIncome, totalExpenses, 1);
+  // Month selector — show months that have data + current month
+  const allMonths = [...new Set([...months.map(m => m.month), now()])].sort().reverse();
 
   return (
     <Card accent={color + "88"}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
         <div>
-          <div style={{ fontSize: 11, color: C.dim, letterSpacing: 1, textTransform: "uppercase", marginBottom: 3 }}>月收支概況</div>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: 1, textTransform: "uppercase", marginBottom: 3 }}>月收支記錄</div>
           <div style={{ fontSize: 16, fontWeight: 800, color }}>💰 {name} 收支</div>
         </div>
         <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 11, color: C.dim }}>月結餘</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: surplus >= 0 ? color : C.red }}>
-            {surplus >= 0 ? "+" : ""}NT$ {fmt(surplus)}
+          <div style={{ fontSize: 10, color: C.dim }}>{thisY} 年儲蓄率</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: rateColor(yearRate) }}>
+            {yearRate !== null ? `${yearRate.toFixed(1)}%` : "—"}
           </div>
-          {savingsRate !== null && (
-            <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>
-              儲蓄率 <span style={{ color: savingsRate >= 20 ? C.p1 : savingsRate >= 10 ? C.gold : C.red, fontWeight: 700 }}>{savingsRate.toFixed(1)}%</span>
-            </div>
-          )}
+          {yearInc > 0 && <div style={{ fontSize: 10, color: C.dim }}>年收 {fmt(yearInc)} 年存 {fmt(yearSur)}</div>}
         </div>
       </div>
 
-      {/* Visual bar comparison */}
-      {(totalIncome > 0 || totalExpenses > 0) && (
-        <div style={{ marginBottom: 16, background: C.surface, borderRadius: 8, padding: 12, border: `1px solid ${C.border}` }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
-                <span style={{ color: C.dim }}>月收入</span>
-                <span style={{ color: C.p1, fontWeight: 700 }}>NT$ {fmt(totalIncome)}</span>
-              </div>
-              <div style={{ background: C.border, borderRadius: 20, height: 8 }}>
-                <div style={{ height: 8, borderRadius: 20, width: `${(totalIncome / barMax) * 100}%`, background: C.p1, transition: "width 0.5s" }} />
-              </div>
+      {/* Yearly bar */}
+      {yearInc > 0 && (
+        <div style={{ marginBottom: 14, background: C.surface, borderRadius: 8, padding: 12, border: `1px solid ${C.border}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
+            <span style={{ color: C.dim }}>{thisY} 累計收入</span>
+            <span style={{ color: C.p1, fontWeight: 700 }}>NT$ {fmt(yearInc)}</span>
+          </div>
+          <div style={{ background: C.border, borderRadius: 20, height: 7, marginBottom: 6 }}>
+            <div style={{ height: 7, borderRadius: 20, width: "100%", background: C.p1 + "44" }} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
+            <span style={{ color: C.dim }}>{thisY} 累計支出</span>
+            <span style={{ color: C.red, fontWeight: 700 }}>NT$ {fmt(yearExp)}</span>
+          </div>
+          <div style={{ background: C.border, borderRadius: 20, height: 7, marginBottom: 8 }}>
+            <div style={{ height: 7, borderRadius: 20, width: `${yearInc > 0 ? Math.min((yearExp/yearInc)*100,100) : 0}%`, background: C.red + "bb" }} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 800, paddingTop: 6, borderTop: `1px solid ${C.border}` }}>
+            <span style={{ color: C.dim }}>年結餘</span>
+            <span style={{ color: yearSur >= 0 ? color : C.red }}>{yearSur >= 0 ? "+" : ""}NT$ {fmt(yearSur)}</span>
+          </div>
+          {/* Monthly savings sparkline */}
+          {yearMonths.length > 1 && (
+            <div style={{ display: "flex", gap: 4, alignItems: "flex-end", height: 36, marginTop: 10 }}>
+              {[...yearMonths].sort((a,b) => a.month.localeCompare(b.month)).map(m => {
+                const mInc = m.income.reduce((s,x) => s+x.amount, 0);
+                const mExp = m.expenses.reduce((s,x) => s+x.amount, 0);
+                const mSur = mInc - mExp;
+                const maxSur = Math.max(...yearMonths.map(mm => Math.abs(mm.income.reduce((s,x)=>s+x.amount,0) - mm.expenses.reduce((s,x)=>s+x.amount,0))), 1);
+                return (
+                  <div key={m.month} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                    <div style={{ width: "100%", borderRadius: "3px 3px 0 0",
+                      height: Math.max(3, (Math.abs(mSur)/maxSur)*28),
+                      background: mSur >= 0 ? color : C.red, opacity: 0.8 }} />
+                    <div style={{ fontSize: 8, color: C.dim }}>{m.month.slice(5)}</div>
+                  </div>
+                );
+              })}
             </div>
-            <div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
-                <span style={{ color: C.dim }}>月支出</span>
-                <span style={{ color: C.red, fontWeight: 700 }}>NT$ {fmt(totalExpenses)}</span>
-              </div>
-              <div style={{ background: C.border, borderRadius: 20, height: 8 }}>
-                <div style={{ height: 8, borderRadius: 20, width: `${(totalExpenses / barMax) * 100}%`, background: C.red + "cc", transition: "width 0.5s" }} />
-              </div>
+          )}
+        </div>
+      )}
+
+      {/* Month selector */}
+      <div style={{ display: "flex", gap: 7, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+        <Sel value={selMonth} onChange={setSelMonth}
+          options={allMonths.map(m => ({ v: m, l: m }))}
+          style={{ flex: 1, minWidth: 120 }} />
+        <Btn small color={C.dim} onClick={copyFromLastMonth} style={{ whiteSpace: "nowrap" }}>
+          ↙ 複製上月
+        </Btn>
+        {months.find(m => m.month === selMonth) && (
+          <Btn small color={C.red} onClick={() => setCashflow({ ...cashflow, months: months.filter(m => m.month !== selMonth) })}>
+            刪除此月
+          </Btn>
+        )}
+      </div>
+
+      {/* Current month stats */}
+      {(curInc > 0 || curExp > 0) && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+          <div style={{ background: C.surface, borderRadius: 8, padding: 10, border: `1px solid ${C.border}`, textAlign: "center" }}>
+            <div style={{ fontSize: 10, color: C.dim, marginBottom: 4 }}>本月收入</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: C.p1 }}>+{fmt(curInc)}</div>
+          </div>
+          <div style={{ background: C.surface, borderRadius: 8, padding: 10, border: `1px solid ${C.border}`, textAlign: "center" }}>
+            <div style={{ fontSize: 10, color: C.dim, marginBottom: 4 }}>本月支出</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: C.red }}>{fmt(curExp)}</div>
+          </div>
+          <div style={{ background: C.surface, borderRadius: 8, padding: 10, border: `1px solid ${C.border}`, textAlign: "center" }}>
+            <div style={{ fontSize: 10, color: C.dim, marginBottom: 4 }}>儲蓄率</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: rateColor(curRate) }}>
+              {curRate !== null ? `${curRate.toFixed(1)}%` : "—"}
             </div>
           </div>
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        {/* ── Income Column ── */}
+      {/* Income + Expense columns */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        {/* Income */}
         <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.p1, textTransform: "uppercase", letterSpacing: 0.5 }}>📥 月收入</div>
-            <div style={{ fontSize: 13, fontWeight: 800, color: C.p1 }}>NT$ {fmt(totalIncome)}</div>
+          <div style={{ fontSize: 11, color: C.p1, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+            📥 收入 <span style={{ color: C.text }}>+{fmt(curInc)}</span>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 8 }}>
-            {income.map(x => (
+            {cur.income.map(x => (
               <div key={x.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "8px 10px", background: C.surface, borderRadius: 7, border: `1px solid ${C.border}` }}>
+                padding: "7px 10px", background: C.surface, borderRadius: 7, border: `1px solid ${C.border}` }}>
                 <div>
-                  <div style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{x.label}</div>
+                  <div style={{ fontSize: 12, color: C.text, fontWeight: 600 }}>{x.label}</div>
                   {x.note && <div style={{ fontSize: 10, color: C.dim }}>{x.note}</div>}
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: C.p1 }}>+{fmt(x.amount)}</span>
-                  <Btn small color={C.dim} onClick={() => startEdit(x, "income")}>✎</Btn>
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: C.p1 }}>+{fmt(x.amount)}</span>
                   <Btn small color={C.red} onClick={() => delIncome(x.id)}>✕</Btn>
                 </div>
               </div>
             ))}
-            {income.length === 0 && <div style={{ fontSize: 12, color: C.dimmer, padding: "6px 0" }}>尚未設定收入來源</div>}
+            {cur.income.length === 0 && <div style={{ fontSize: 11, color: C.dimmer }}>尚無收入項目</div>}
           </div>
-          {!showIncForm ? (
-            <Btn color={C.p1} full small onClick={() => { setShowIncForm(true); setEditingId(null); setEditType(null); }}>＋ 新增收入</Btn>
-          ) : (
-            <div style={{ background: C.surface, borderRadius: 7, padding: 10, border: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 6 }}>
-              <Inp value={iLabel} onChange={setILabel} placeholder="項目名稱（如：薪資）" small />
-              <Inp value={iAmount} onChange={setIAmount} placeholder="月金額" type="number" small />
-              <Inp value={iNote} onChange={setINote} placeholder="備注（選填）" small />
-              <div style={{ display: "flex", gap: 5 }}>
-                <Btn onClick={addIncome} color={C.p1} small style={{ flex: 1 }}>{editingId && editType === "income" ? "更新" : "新增"}</Btn>
-                <Btn onClick={cancelEdit} color={C.dim} small style={{ flex: 1 }}>取消</Btn>
-              </div>
+          <div style={{ background: C.surface, borderRadius: 7, padding: 8, border: `1px solid ${C.border}` }}>
+            <Inp value={iLabel} onChange={setILabel} placeholder="項目名稱" small style={{ marginBottom: 5 }} />
+            <div style={{ display: "flex", gap: 5, marginBottom: 5 }}>
+              <Inp value={iAmt} onChange={setIAmt} placeholder="金額" type="number" small />
+              <Inp value={iNote} onChange={setINote} placeholder="備注" small />
             </div>
-          )}
+            <Btn small color={C.p1} full onClick={addIncome}>＋ 新增收入</Btn>
+          </div>
         </div>
 
-        {/* ── Expense Column ── */}
+        {/* Expense */}
         <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.red, textTransform: "uppercase", letterSpacing: 0.5 }}>📤 月支出</div>
-            <div style={{ fontSize: 13, fontWeight: 800, color: C.red }}>NT$ {fmt(totalExpenses)}</div>
+          <div style={{ fontSize: 11, color: C.red, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+            📤 支出 <span style={{ color: C.text }}>{fmt(curExp)}</span>
           </div>
-          <div style={{ fontSize: 10, color: C.dimmer, marginBottom: 6 }}>自選填入想讓對方看到的支出項目</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 8 }}>
-            {expenses.map(x => (
+            {cur.expenses.map(x => (
               <div key={x.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "8px 10px", background: C.surface, borderRadius: 7, border: `1px solid ${C.border}` }}>
+                padding: "7px 10px", background: C.surface, borderRadius: 7, border: `1px solid ${C.border}` }}>
                 <div>
-                  <div style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{x.label}</div>
+                  <div style={{ fontSize: 12, color: C.text, fontWeight: 600 }}>{x.label}</div>
                   {x.note && <div style={{ fontSize: 10, color: C.dim }}>{x.note}</div>}
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: C.red }}>-{fmt(x.amount)}</span>
-                  <Btn small color={C.dim} onClick={() => startEdit(x, "expense")}>✎</Btn>
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: C.red }}>-{fmt(x.amount)}</span>
                   <Btn small color={C.red} onClick={() => delExpense(x.id)}>✕</Btn>
                 </div>
               </div>
             ))}
-            {expenses.length === 0 && <div style={{ fontSize: 12, color: C.dimmer, padding: "6px 0" }}>尚未設定支出項目</div>}
+            {cur.expenses.length === 0 && <div style={{ fontSize: 11, color: C.dimmer }}>尚無支出項目</div>}
           </div>
-          {!showExpForm ? (
-            <Btn color={C.red} full small onClick={() => { setShowExpForm(true); setEditingId(null); setEditType(null); }}>＋ 新增支出</Btn>
-          ) : (
-            <div style={{ background: C.surface, borderRadius: 7, padding: 10, border: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 6 }}>
-              <Inp value={eLabel} onChange={setELabel} placeholder="項目名稱（如：房租、保費）" small />
-              <Inp value={eAmount} onChange={setEAmount} placeholder="月金額" type="number" small />
-              <Inp value={eNote} onChange={setENote} placeholder="備注（選填）" small />
-              <div style={{ display: "flex", gap: 5 }}>
-                <Btn onClick={addExpense} color={C.red} small style={{ flex: 1 }}>{editingId && editType === "expense" ? "更新" : "新增"}</Btn>
-                <Btn onClick={cancelEdit} color={C.dim} small style={{ flex: 1 }}>取消</Btn>
-              </div>
+          <div style={{ background: C.surface, borderRadius: 7, padding: 8, border: `1px solid ${C.border}` }}>
+            <Inp value={eLabel} onChange={setELabel} placeholder="項目名稱" small style={{ marginBottom: 5 }} />
+            <div style={{ display: "flex", gap: 5, marginBottom: 5 }}>
+              <Inp value={eAmt} onChange={setEAmt} placeholder="金額" type="number" small />
+              <Inp value={eNote} onChange={setENote} placeholder="備注" small />
             </div>
-          )}
+            <Btn small color={C.red} full onClick={addExpense}>＋ 新增支出</Btn>
+          </div>
         </div>
       </div>
     </Card>
@@ -1389,10 +1516,16 @@ function Overview({ p1Name, p2Name, p1NW, p2NW, p1Gross, p2Gross, p1Debt, p2Debt
 
       {/* Cashflow comparison */}
       {(p1Cash.income?.length > 0 || p2Cash.income?.length > 0 || p1Cash.expenses?.length > 0 || p2Cash.expenses?.length > 0) && (() => {
-        const p1Inc = (p1Cash.income || []).reduce((s, x) => s + (x.amount || 0), 0);
-        const p2Inc = (p2Cash.income || []).reduce((s, x) => s + (x.amount || 0), 0);
-        const p1Exp = (p1Cash.expenses || []).reduce((s, x) => s + (x.amount || 0), 0);
-        const p2Exp = (p2Cash.expenses || []).reduce((s, x) => s + (x.amount || 0), 0);
+        const thisM = now();
+        const thisYr = String(new Date().getFullYear());
+        const getYearStats = (cash) => {
+          const yms = (cash.months || []).filter(m => m.month.startsWith(thisYr));
+          const inc = yms.reduce((s,m) => s + m.income.reduce((ss,x) => ss+x.amount,0), 0);
+          const exp = yms.reduce((s,m) => s + m.expenses.reduce((ss,x) => ss+x.amount,0), 0);
+          return { inc, exp };
+        };
+        const p1yr = getYearStats(p1Cash); const p1Inc = p1yr.inc; const p1Exp = p1yr.exp;
+        const p2yr = getYearStats(p2Cash); const p2Inc = p2yr.inc; const p2Exp = p2yr.exp;
         const p1Sur = p1Inc - p1Exp;
         const p2Sur = p2Inc - p2Exp;
         const maxInc = Math.max(p1Inc, p2Inc, 1);
@@ -1438,7 +1571,7 @@ function Overview({ p1Name, p2Name, p1NW, p2NW, p1Gross, p2Gross, p1Debt, p2Debt
                     </div>
                     {rate !== null && (
                       <div style={{ fontSize: 11, color: C.dim, marginBottom: 10 }}>
-                        儲蓄率 <span style={{ color: rate >= 20 ? C.p1 : rate >= 10 ? C.gold : C.red, fontWeight: 700 }}>{rate.toFixed(1)}%</span>
+                        年儲蓄率 <span style={{ color: rate >= 20 ? C.p1 : rate >= 10 ? C.gold : C.red, fontWeight: 700 }}>{rate.toFixed(1)}%</span>
                       </div>
                     )}
                     {/* Expense breakdown */}
@@ -1569,7 +1702,8 @@ function App() {
   const p2NW = p2Gross - p2TotalDebt;
   const sharedBills = shared.bills || [];
   const sharedRent = (shared.rentIncome || []).reduce((s,r) => s + (r.amount||0), 0);
-  const thisMonthBill = sharedBills.filter(b => b.month === now()).reduce((s, b) => s + b.amount, 0);
+  const sharedCashExp = (shared.cashExpenses || []).filter(c => c.month === now()).reduce((s,c) => s + c.amount, 0);
+  const thisMonthBill = sharedBills.filter(b => b.month === now()).reduce((s, b) => s + b.amount, 0) + sharedCashExp;
   const sharedCash = shared.cashBalance || 0;
 
   const tabs = [
