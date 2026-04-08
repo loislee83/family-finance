@@ -441,22 +441,44 @@ function AssetsPanel({ name, color, assets, setAssets, usdRate = 32, crypto, set
   // Fetch BTC price
   const fetchBTC = async () => {
     setBtcFetching(true);
-    try {
-      const res = await fetch("https://corsproxy.io/?" + encodeURIComponent("https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?interval=1d&range=1d"), { signal: AbortSignal.timeout(8000) });
-      const json = await res.json();
-      const data = JSON.parse(json.contents || "{}");
-      const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-      if (price) {
-        setCrypto(btcList.map(b => ({ ...b, priceUSD: price, valueTWD: b.amount * price * usdRate, liveTs: Date.now() })));
-      }
-    } catch(e) {
+    let price = null;
+
+    // Source 1: CoinGecko (no API key needed, most reliable for crypto)
+    const coingeckoUrl = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd";
+    const proxies = [
+      "https://corsproxy.io/?",
+      "https://api.allorigins.win/get?url=",
+      "https://api.codetabs.com/v1/proxy?quest=",
+    ];
+
+    for (const proxy of proxies) {
+      if (price) break;
       try {
-        const res2 = await fetch("https://api.allorigins.win/get?url=" + encodeURIComponent("https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?interval=1d&range=1d"), { signal: AbortSignal.timeout(8000) });
-        const json2 = await res2.json();
-        const data2 = JSON.parse(json2.contents || "{}");
-        const price2 = data2?.chart?.result?.[0]?.meta?.regularMarketPrice;
-        if (price2) setCrypto(btcList.map(b => ({ ...b, priceUSD: price2, valueTWD: b.amount * price2 * usdRate, liveTs: Date.now() })));
+        const res = await fetch(proxy + encodeURIComponent(coingeckoUrl), { signal: AbortSignal.timeout(8000) });
+        const json = await res.json();
+        // allorigins wraps in .contents, others return directly
+        const data = json.contents ? JSON.parse(json.contents) : json;
+        const p = data?.bitcoin?.usd;
+        if (p && +p > 0) { price = +p; break; }
       } catch {}
+    }
+
+    // Source 2: Yahoo Finance BTC-USD as final fallback
+    if (!price) {
+      for (const proxy of proxies) {
+        try {
+          const url = "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?interval=1d&range=1d";
+          const res = await fetch(proxy + encodeURIComponent(url), { signal: AbortSignal.timeout(8000) });
+          const json = await res.json();
+          const data = json.contents ? JSON.parse(json.contents) : json;
+          const p = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+          if (p && +p > 0) { price = +p; break; }
+        } catch {}
+      }
+    }
+
+    if (price) {
+      setCrypto(btcList.map(b => ({ ...b, priceUSD: price, valueTWD: Math.round(b.amount * price * usdRate), liveTs: Date.now() })));
     }
     setBtcFetching(false);
   };
