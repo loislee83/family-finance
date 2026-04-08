@@ -1,11 +1,12 @@
-DOCTYPE html>
+
+<!DOCTYPE html>
  
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Lois &amp; Lisa 家庭財務</title>
-  <meta name="theme-color" content="#090b10" />
+  <meta asname="theme-color" content="#090b10" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="家庭財務" />
@@ -156,22 +157,53 @@ const fmtUSD = (n) => n == null || isNaN(n) ? "—" : "$" + Number(n).toLocaleSt
 const pct = (n) => { if (n == null) return "—"; return (n > 0 ? "+" : "") + Number(n).toFixed(2) + "%"; };
 const now = () => new Date().toISOString().slice(0, 7);
  
-// ─── Yahoo Finance price fetcher via allorigins proxy ─────────────────────────
+// ─── Stock price fetcher — multi-source fallback ─────────────────────────────
 async function fetchPrice(ticker, market) {
-  // market: "TW" | "US"
   const symbol = market === "TW" ? ticker + ".TW" : ticker;
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-  const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-  try {
-    const res = await fetch(proxy, { signal: AbortSignal.timeout(8000) });
+ 
+  // Source 1: Yahoo Finance via corsproxy.io
+  const tryYahoo = async (proxyBase) => {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+    const res = await fetch(proxyBase + encodeURIComponent(url), { signal: AbortSignal.timeout(8000) });
     const json = await res.json();
-    const data = JSON.parse(json.contents);
-    const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-    const prev  = data?.chart?.result?.[0]?.meta?.chartPreviousClose;
-    const currency = data?.chart?.result?.[0]?.meta?.currency;
-    if (!price) return null;
-    return { price, prev, change: prev ? ((price - prev) / prev) * 100 : null, currency };
-  } catch { return null; }
+    const raw = typeof json.contents === "string" ? JSON.parse(json.contents) : json;
+    const meta = raw?.chart?.result?.[0]?.meta;
+    if (!meta?.regularMarketPrice) return null;
+    return { price: meta.regularMarketPrice, prev: meta.chartPreviousClose,
+      change: meta.chartPreviousClose ? ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100 : null };
+  };
+ 
+  // Source 2: Yahoo Finance v7 (different endpoint, sometimes less blocked)
+  const tryYahooV7 = async () => {
+    const url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`;
+    const proxied = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+    const res = await fetch(proxied, { signal: AbortSignal.timeout(8000) });
+    const json = await res.json();
+    const q = json?.quoteResponse?.result?.[0];
+    if (!q?.regularMarketPrice) return null;
+    return { price: q.regularMarketPrice, prev: q.regularMarketPreviousClose,
+      change: q.regularMarketChangePercent ?? null };
+  };
+ 
+  const proxies = [
+    "https://corsproxy.io/?",
+    "https://api.allorigins.win/get?url=",
+    "https://api.codetabs.com/v1/proxy?quest=",
+  ];
+ 
+  for (const proxy of proxies) {
+    try {
+      const result = await tryYahoo(proxy);
+      if (result) return result;
+    } catch {}
+  }
+ 
+  try {
+    const result = await tryYahooV7();
+    if (result) return result;
+  } catch {}
+ 
+  return null;
 }
  
 // ─── Primitive UI ─────────────────────────────────────────────────────────────
