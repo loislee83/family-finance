@@ -1,4 +1,5 @@
-<!DOCTYPE html>
+DOCTYPE html>
+ 
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8" />
@@ -27,10 +28,10 @@
 </head>
 <body>
   <div id="root"></div>
-
+ 
   <script type="text/babel">
     const { useState, useEffect, useCallback, useRef } = React;
-
+ 
     // ── Firebase setup (compat mode — works as global) ─────────────────────
     // 👇 填入你的 Firebase 設定碼（從 Firebase Console 複製）
     const FIREBASE_CONFIG = {
@@ -42,19 +43,19 @@
       appId: "1:277505966876:web:d72aa53ca998d9f5a1f0d9",
     };
     const FAMILY_DOC_ID = "lois-lisa";
-
+ 
     let db = null;
     try {
       if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
       db = firebase.firestore();
     } catch(e) { console.warn("Firebase init failed", e); }
-
+ 
     // ── Storage Hook ────────────────────────────────────────────────────────
     function useStorage(key, def) {
       const [val, setVal] = useState(() => {
         try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : def; } catch { return def; }
       });
-
+ 
       useEffect(() => {
         if (!db || !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey.startsWith("PASTE")) return;
         const unsub = db.collection("family").doc(FAMILY_DOC_ID)
@@ -72,7 +73,7 @@
           }, (err) => console.warn("Firebase read error", err));
         return unsub;
       }, [key]);
-
+ 
       const save = useCallback((v) => {
         const next = typeof v === "function" ? v(val) : v;
         setVal(next);
@@ -83,10 +84,57 @@
             .catch(e => console.warn("Firebase write error", e));
         }
       }, [key, val]);
-
+ 
       return [val, save];
     }
-
+ 
+ 
+ 
+    // ─── Password Gate ────────────────────────────────────────────────────────
+    // 修改下面兩個密碼為你們自己想要的
+    const PASSWORDS = ["lois2025", "lisa2025"];
+ 
+    function PasswordGate({ children }) {
+      const [ok, setOk] = React.useState(() => sessionStorage.getItem("ff_auth") === "ok");
+      const [input, setInput] = React.useState("");
+      const [shake, setShake] = React.useState(false);
+ 
+      const submit = () => {
+        if (PASSWORDS.includes(input.trim())) {
+          sessionStorage.setItem("ff_auth", "ok");
+          setOk(true);
+        } else {
+          setShake(true);
+          setTimeout(() => setShake(false), 500);
+          setInput("");
+        }
+      };
+ 
+      if (ok) return children;
+      return (
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"center",
+          justifyContent:"center", minHeight:"100vh", background:"#090b10", gap:20 }}>
+          <div style={{ fontSize:32 }}>🏠</div>
+          <div style={{ fontSize:20, fontWeight:800, color:"#e2e8f0" }}>Lois & Lisa 家庭財務</div>
+          <div style={{ fontSize:13, color:"#64748b", marginBottom:8 }}>請輸入密碼進入</div>
+          <div style={{ display:"flex", flexDirection:"column", gap:10, width:260,
+            transform: shake ? "translateX(-6px)" : "none", transition:"transform 0.1s" }}>
+            <input type="password" value={input} onChange={e=>setInput(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="輸入密碼" autoFocus
+              style={{ background:"#12151f", border:"1px solid #1c2030", borderRadius:8,
+                color:"#e2e8f0", padding:"12px 16px", fontSize:15, outline:"none",
+                textAlign:"center", letterSpacing:3 }} />
+            <button onClick={submit}
+              style={{ background:"#34d39920", border:"1px solid #34d39940", borderRadius:8,
+                color:"#34d399", fontWeight:700, fontSize:14, padding:"11px 0", cursor:"pointer" }}>
+              進入
+            </button>
+          </div>
+          <div style={{ fontSize:11, color:"#334155", marginTop:8 }}>關閉瀏覽器後需重新輸入</div>
+        </div>
+      );
+    }
+ 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const C = {
   bg: "#090b10",
@@ -102,12 +150,12 @@ const C = {
   dim: "#64748b",
   dimmer: "#334155",
 };
-
+ 
 const fmt = (n, d = 0) => n == null || isNaN(n) ? "—" : Number(n).toLocaleString("zh-TW", { minimumFractionDigits: d, maximumFractionDigits: d });
 const fmtUSD = (n) => n == null || isNaN(n) ? "—" : "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const pct = (n) => { if (n == null) return "—"; return (n > 0 ? "+" : "") + Number(n).toFixed(2) + "%"; };
 const now = () => new Date().toISOString().slice(0, 7);
-
+ 
 // ─── Yahoo Finance price fetcher via allorigins proxy ─────────────────────────
 async function fetchPrice(ticker, market) {
   // market: "TW" | "US"
@@ -125,14 +173,14 @@ async function fetchPrice(ticker, market) {
     return { price, prev, change: prev ? ((price - prev) / prev) * 100 : null, currency };
   } catch { return null; }
 }
-
+ 
 // ─── Primitive UI ─────────────────────────────────────────────────────────────
 const Inp = ({ value, onChange, placeholder, type = "text", style = {}, small }) => (
   <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
     style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, color: C.text,
       padding: small ? "5px 9px" : "8px 12px", fontSize: small ? 12 : 13, outline: "none", width: "100%", ...style }} />
 );
-
+ 
 const Sel = ({ value, onChange, options, style = {} }) => (
   <select value={value} onChange={e => onChange(e.target.value)}
     style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, color: C.text,
@@ -140,7 +188,7 @@ const Sel = ({ value, onChange, options, style = {} }) => (
     {options.map(o => <option key={o.v ?? o} value={o.v ?? o}>{o.l ?? o}</option>)}
   </select>
 );
-
+ 
 const Btn = ({ children, onClick, color = C.p1, small, full, disabled, style = {} }) => (
   <button onClick={onClick} disabled={disabled}
     style={{ background: color + "18", border: `1px solid ${color}40`, borderRadius: 6, color: disabled ? C.dim : color,
@@ -149,14 +197,14 @@ const Btn = ({ children, onClick, color = C.p1, small, full, disabled, style = {
     {children}
   </button>
 );
-
+ 
 const Tag = ({ children, color }) => (
   <span style={{ background: color + "18", color, border: `1px solid ${color}30`, borderRadius: 4,
     padding: "2px 7px", fontSize: 11, fontWeight: 600 }}>{children}</span>
 );
-
+ 
 const Divider = () => <div style={{ height: 1, background: C.border, margin: "12px 0" }} />;
-
+ 
 function Card({ children, accent, style = {} }) {
   return (
     <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14,
@@ -166,87 +214,74 @@ function Card({ children, accent, style = {} }) {
     </div>
   );
 }
-
-// ─── Stock Panel ──────────────────────────────────────────────────────────────
-function StockPanel({ name, color, stocks, setStocks, trades, setTrades }) {
+ 
+// ─── Stock Panel (簡易版：只填代碼+股數，自動抓價，無損益) ──────────────────
+function StockPanel({ name, color, stocks, setStocks }) {
   const [ticker, setTicker] = useState("");
   const [sname, setSname] = useState("");
   const [market, setMarket] = useState("TW");
   const [shares, setShares] = useState("");
-  const [price, setPrice] = useState("");
-  const [ttype, setTtype] = useState("buy");
-  const [tdate, setTdate] = useState(new Date().toISOString().slice(0, 10));
   const [fetching, setFetching] = useState({});
-  const [showTrades, setShowTrades] = useState(false);
+  const [fetchingAll, setFetchingAll] = useState(false);
   const [usdTwd, setUsdTwd] = useState(null);
-
-  // Fetch USD/TWD rate once
+ 
   useEffect(() => {
     (async () => {
       const r = await fetchPrice("USDTWD=X", "US");
       if (r?.price) setUsdTwd(r.price);
     })();
   }, []);
-
+ 
   const refreshPrice = async (s) => {
     setFetching(f => ({ ...f, [s.id]: true }));
     const r = await fetchPrice(s.ticker, s.market);
     if (r) {
-      setStocks(prev => prev.map(x => x.id === s.id ? { ...x, livePrice: r.price, livePrev: r.prev, liveChange: r.change, liveTs: Date.now() } : x));
+      setStocks(prev => prev.map(x => x.id === s.id
+        ? { ...x, livePrice: r.price, liveChange: r.change, liveTs: Date.now() }
+        : x));
     }
     setFetching(f => ({ ...f, [s.id]: false }));
   };
-
+ 
   const refreshAll = async () => {
+    setFetchingAll(true);
     for (const s of stocks) await refreshPrice(s);
+    setFetchingAll(false);
   };
-
-  const addTrade = () => {
-    if (!ticker || !shares || !price) return;
-    const id = Date.now();
-    const trade = { id, ticker: ticker.toUpperCase(), name: sname || ticker.toUpperCase(), market, shares: +shares, price: +price, type: ttype, date: tdate };
-
-    // Upsert into stock holdings
-    setStocks(prev => {
-      const existing = prev.find(s => s.ticker === trade.ticker && s.market === trade.market);
-      if (!existing) {
-        if (ttype === "sell") return prev; // can't sell what you don't have
-        return [...prev, { id, ticker: trade.ticker, name: trade.name, market, shares: +shares, avgCost: +price, livePrice: null, liveChange: null }];
-      }
-      // Recalculate avgCost & shares
-      const newShares = ttype === "buy"
-        ? existing.shares + +shares
-        : Math.max(0, existing.shares - +shares);
-      const newAvg = ttype === "buy"
-        ? (existing.avgCost * existing.shares + +price * +shares) / (existing.shares + +shares)
-        : existing.avgCost;
-      return prev.map(s => s.ticker === trade.ticker && s.market === trade.market
-        ? { ...s, shares: newShares, avgCost: newAvg }
-        : s
-      ).filter(s => s.shares > 0);
-    });
-
-    setTrades(prev => [trade, ...prev]);
-    setTicker(""); setSname(""); setShares(""); setPrice("");
+ 
+  // auto-refresh on mount
+  useEffect(() => {
+    if (stocks.length > 0) refreshAll();
+  }, []);
+ 
+  const addStock = () => {
+    if (!ticker || !shares) return;
+    const existing = stocks.find(s => s.ticker === ticker.toUpperCase() && s.market === market);
+    if (existing) {
+      // update shares if already exists
+      setStocks(stocks.map(s => s.ticker === ticker.toUpperCase() && s.market === market
+        ? { ...s, shares: +shares } : s));
+    } else {
+      setStocks([...stocks, {
+        id: Date.now(),
+        ticker: ticker.toUpperCase(),
+        name: sname || ticker.toUpperCase(),
+        market,
+        shares: +shares,
+        livePrice: null, liveChange: null, liveTs: null,
+      }]);
+    }
+    setTicker(""); setSname(""); setShares("");
   };
-
-  // Compute market value in TWD
+ 
   const stockMV = (s) => {
-    const p = s.livePrice || s.avgCost;
+    const p = s.livePrice || 0;
     const mv = p * s.shares;
-    if (s.market === "US") return usdTwd ? mv * usdTwd : mv * 32; // fallback rate
-    return mv;
+    return s.market === "US" ? (usdTwd ? mv * usdTwd : mv * 32) : mv;
   };
-
+ 
   const totalTWD = stocks.reduce((sum, s) => sum + stockMV(s), 0);
-  const totalCost = stocks.reduce((sum, s) => {
-    const cost = s.avgCost * s.shares;
-    return sum + (s.market === "US" ? cost * (usdTwd || 32) : cost);
-  }, 0);
-  const totalPnL = totalTWD - totalCost;
-
-  const myTrades = trades.filter(t => stocks.some(s => s.ticker === t.ticker && s.market === t.market));
-
+ 
   return (
     <Card accent={color}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
@@ -256,31 +291,27 @@ function StockPanel({ name, color, stocks, setStocks, trades, setTrades }) {
         </div>
         <div style={{ textAlign: "right" }}>
           <div style={{ fontSize: 24, fontWeight: 800, color: C.text }}>NT$ {fmt(totalTWD)}</div>
-          <div style={{ fontSize: 12, color: totalPnL >= 0 ? C.p1 : C.red, marginTop: 2 }}>
-            損益 {totalPnL >= 0 ? "+" : ""}{fmt(totalPnL)} ({pct(totalCost ? (totalPnL / totalCost) * 100 : 0)})
-          </div>
           {usdTwd && <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>USD/TWD ≈ {usdTwd.toFixed(2)}</div>}
         </div>
       </div>
-
+ 
       {/* Holdings table */}
       {stocks.length > 0 && (
         <div style={{ marginBottom: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 70px 80px 80px 80px 70px 60px", gap: 6,
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 70px 80px 90px 36px", gap: 6,
             fontSize: 10, color: C.dim, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase",
             paddingBottom: 6, borderBottom: `1px solid ${C.border}` }}>
+            <div /><div>股票</div>
+            <div style={{ textAlign: "right" }}>股數</div>
+            <div style={{ textAlign: "right" }}>現價</div>
+            <div style={{ textAlign: "right" }}>市值(TWD)</div>
             <div />
-            <div>股票</div><div style={{ textAlign: "right" }}>股數</div>
-            <div style={{ textAlign: "right" }}>均價</div><div style={{ textAlign: "right" }}>現價</div>
-            <div style={{ textAlign: "right" }}>漲跌</div><div style={{ textAlign: "right" }}>市值(TWD)</div><div />
           </div>
           {stocks.map(s => {
-            const live = s.livePrice;
-            const pnlPct = live && s.avgCost ? ((live - s.avgCost) / s.avgCost) * 100 : null;
             const mv = stockMV(s);
             const tsAge = s.liveTs ? Math.round((Date.now() - s.liveTs) / 60000) : null;
             return (
-              <div key={s.id} style={{ display: "grid", gridTemplateColumns: "auto 1fr 70px 80px 80px 80px 70px 60px",
+              <div key={s.id} style={{ display: "grid", gridTemplateColumns: "auto 1fr 70px 80px 90px 36px",
                 gap: 6, alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
                 <Tag color={s.market === "TW" ? C.p1 : C.gold}>{s.market}</Tag>
                 <div>
@@ -288,79 +319,48 @@ function StockPanel({ name, color, stocks, setStocks, trades, setTrades }) {
                   <div style={{ color: C.dim, fontSize: 10 }}>{s.ticker}</div>
                 </div>
                 <div style={{ textAlign: "right", color: C.dim }}>{fmt(s.shares, 0)}</div>
-                <div style={{ textAlign: "right", color: C.dim }}>
-                  {s.market === "US" ? fmtUSD(s.avgCost) : fmt(s.avgCost, 2)}
-                </div>
-                <div style={{ textAlign: "right", color: live ? C.text : C.dimmer }}>
-                  {live ? (s.market === "US" ? fmtUSD(live) : fmt(live, 2)) : <span style={{ fontSize: 10 }}>—</span>}
+                <div style={{ textAlign: "right", color: s.livePrice ? C.text : C.dimmer }}>
+                  {s.livePrice
+                    ? (s.market === "US" ? fmtUSD(s.livePrice) : fmt(s.livePrice, 2))
+                    : <span style={{ fontSize: 10 }}>待抓取</span>}
                   {tsAge !== null && <div style={{ fontSize: 9, color: C.dimmer }}>{tsAge}分前</div>}
                 </div>
-                <div style={{ textAlign: "right", color: s.liveChange == null ? C.dimmer : s.liveChange >= 0 ? C.p1 : C.red }}>
-                  {s.liveChange != null ? pct(s.liveChange) : "—"}
+                <div style={{ textAlign: "right", fontWeight: 600, color: mv > 0 ? C.text : C.dimmer }}>
+                  {mv > 0 ? fmt(mv) : "—"}
                 </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ color: C.text, fontWeight: 600 }}>{fmt(mv)}</div>
-                  {pnlPct != null && <div style={{ fontSize: 10, color: pnlPct >= 0 ? C.p1 : C.red }}>{pct(pnlPct)}</div>}
-                </div>
-                <Btn small color={fetching[s.id] ? C.dim : color} onClick={() => refreshPrice(s)} disabled={fetching[s.id]}>
-                  {fetching[s.id] ? "…" : "更新"}
-                </Btn>
+                <Btn small color={C.red} onClick={() => setStocks(stocks.filter(x => x.id !== s.id))}>✕</Btn>
               </div>
             );
           })}
-          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 6 }}>
-            <Btn small color={color} onClick={refreshAll}>↻ 全部更新</Btn>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
+            <Btn small color={fetchingAll ? C.dim : color} onClick={refreshAll} disabled={fetchingAll}>
+              {fetchingAll ? "更新中…" : "↻ 更新所有股價"}
+            </Btn>
           </div>
         </div>
       )}
-
-      {stocks.length === 0 && <div style={{ color: C.dim, fontSize: 13, padding: "12px 0" }}>尚無持股</div>}
-
-      {/* Add trade form */}
+ 
+      {stocks.length === 0 && <div style={{ color: C.dim, fontSize: 13, padding: "12px 0" }}>尚無持股，請新增</div>}
+ 
+      {/* Simple add form */}
       <Divider />
       <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", marginBottom: 8 }}>
-        記錄交易
+        新增 / 更新持股
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "70px 90px 1fr 80px 90px 80px auto", gap: 7 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "80px 90px 1fr 90px auto", gap: 7 }}>
         <Sel value={market} onChange={setMarket} options={[{ v: "TW", l: "台股" }, { v: "US", l: "美股" }]} />
         <Inp value={ticker} onChange={setTicker} placeholder="代碼" />
-        <Inp value={sname} onChange={setSname} placeholder="名稱（可空白）" />
+        <Inp value={sname} onChange={setSname} placeholder="名稱（選填）" />
         <Inp value={shares} onChange={setShares} placeholder="股數" type="number" />
-        <Inp value={price} onChange={setPrice} placeholder={market === "US" ? "價格 $" : "價格 NT$"} type="number" />
-        <Sel value={ttype} onChange={setTtype} options={[{ v: "buy", l: "買入" }, { v: "sell", l: "賣出" }]} />
-        <Btn onClick={addTrade} color={ttype === "buy" ? C.p1 : C.red}>記錄</Btn>
+        <Btn onClick={addStock} color={color}>新增</Btn>
       </div>
-      <div style={{ marginTop: 6 }}>
-        <Inp value={tdate} onChange={setTdate} type="date" style={{ width: 140 }} />
+      <div style={{ fontSize: 11, color: C.dimmer, marginTop: 6 }}>
+        台股代碼範例：2330（台積電）　美股範例：AAPL（蘋果）
       </div>
-
-      {/* Trade history toggle */}
-      {myTrades.length > 0 && (
-        <>
-          <Btn small color={C.dim} onClick={() => setShowTrades(v => !v)} style={{ marginTop: 10 }}>
-            {showTrades ? "▲ 收起" : `▼ 交易紀錄 (${myTrades.length})`}
-          </Btn>
-          {showTrades && (
-            <div style={{ marginTop: 8, maxHeight: 200, overflowY: "auto" }}>
-              {myTrades.map(t => (
-                <div key={t.id} style={{ display: "grid", gridTemplateColumns: "90px auto 1fr 70px 80px 36px",
-                  gap: 8, alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
-                  <span style={{ color: C.dim }}>{t.date}</span>
-                  <Tag color={t.type === "buy" ? C.p1 : C.red}>{t.type === "buy" ? "買入" : "賣出"}</Tag>
-                  <span style={{ color: C.text, fontWeight: 600 }}>{t.name} <span style={{ color: C.dim }}>({t.ticker})</span></span>
-                  <span style={{ textAlign: "right", color: C.dim }}>{fmt(t.shares)} 股</span>
-                  <span style={{ textAlign: "right", color: C.text }}>{t.market === "US" ? fmtUSD(t.price) : fmt(t.price, 2)}</span>
-                  <Btn small color={C.red} onClick={() => setTrades(prev => prev.filter(x => x.id !== t.id))}>✕</Btn>
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      )}
     </Card>
   );
 }
-
+ 
 // ─── Assets Panel ─────────────────────────────────────────────────────────────
 function AssetsPanel({ name, color, assets, setAssets, usdRate = 32 }) {
   const [showForm, setShowForm] = useState(false);
@@ -371,15 +371,15 @@ function AssetsPanel({ name, color, assets, setAssets, usdRate = 32 }) {
   const [ausd, setAusd] = useState("");       // USD cash amount
   const [anote, setAnote] = useState("");
   const types = ["房產", "現金", "基金", "保險", "退休金", "其他"];
-
+ 
   // compute TWD value of an asset
   const twdVal = (a) => {
     if (a.currency === "USD") return (a.usdAmount || 0) * usdRate;
     return a.value || 0;
   };
-
+ 
   const total = assets.reduce((s, a) => s + twdVal(a), 0);
-
+ 
   const add = () => {
     if (!aname) return;
     if (atype === "現金") {
@@ -397,13 +397,13 @@ function AssetsPanel({ name, color, assets, setAssets, usdRate = 32 }) {
     }
     setAname(""); setAval(""); setAusd(""); setAnote(""); setShowForm(false);
   };
-
+ 
   // group cash separately for display
   const cashAssets = assets.filter(a => a.type === "現金");
   const otherAssets = assets.filter(a => a.type !== "現金");
   const cashTWD = cashAssets.filter(a => a.currency !== "USD").reduce((s,a) => s + (a.value||0), 0);
   const cashUSD = cashAssets.filter(a => a.currency === "USD").reduce((s,a) => s + (a.usdAmount||0), 0);
-
+ 
   return (
     <Card accent={color + "66"}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -413,7 +413,7 @@ function AssetsPanel({ name, color, assets, setAssets, usdRate = 32 }) {
           {cashUSD > 0 && <div style={{ fontSize: 10, color: C.dim }}>含 US${fmt(cashUSD, 0)} @ {usdRate.toFixed(1)}</div>}
         </div>
       </div>
-
+ 
       {/* Cash summary box */}
       {cashAssets.length > 0 && (
         <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px", marginBottom: 10 }}>
@@ -450,7 +450,7 @@ function AssetsPanel({ name, color, assets, setAssets, usdRate = 32 }) {
           </div>
         </div>
       )}
-
+ 
       {/* Other assets */}
       <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
         {otherAssets.map(a => (
@@ -470,7 +470,7 @@ function AssetsPanel({ name, color, assets, setAssets, usdRate = 32 }) {
           </div>
         ))}
       </div>
-
+ 
       {/* Add form */}
       {!showForm ? (
         <Btn color={color} full onClick={() => setShowForm(true)} style={{ marginTop: 12 }}>＋ 新增資產</Btn>
@@ -504,8 +504,8 @@ function AssetsPanel({ name, color, assets, setAssets, usdRate = 32 }) {
     </Card>
   );
 }
-
-
+ 
+ 
 // ─── Debts Panel ──────────────────────────────────────────────────────────────
 function DebtsPanel({ name, color, debts, setDebts, gross }) {
   const [showForm, setShowForm] = useState(false);
@@ -517,11 +517,11 @@ function DebtsPanel({ name, color, debts, setDebts, gross }) {
   const [dmonthly, setDmonthly] = useState("");
   const [dnote, setDnote] = useState("");
   const debtTypes = ["房貸", "車貸", "信貸", "學貸", "其他"];
-
+ 
   const totalDebt = debts.reduce((s, d) => s + (d.remaining || 0), 0);
   const netWorth = gross - totalDebt;
   const ltv = gross > 0 ? (totalDebt / gross) * 100 : 0;
-
+ 
   const add = () => {
     if (!dname || !dremaining) return;
     setDebts([...debts, {
@@ -532,9 +532,9 @@ function DebtsPanel({ name, color, debts, setDebts, gross }) {
     setDname(""); setDtotal(""); setDremaining(""); setDrate(""); setDmonthly(""); setDnote("");
     setShowForm(false);
   };
-
+ 
   const updateRemaining = (id, v) => setDebts(debts.map(d => d.id === id ? { ...d, remaining: +v || 0 } : d));
-
+ 
   return (
     <Card accent={C.red + "99"}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
@@ -550,7 +550,7 @@ function DebtsPanel({ name, color, debts, setDebts, gross }) {
           </div>
         </div>
       </div>
-
+ 
       {/* Net worth summary bar */}
       {gross > 0 && (
         <div style={{ background: C.surface, borderRadius: 8, padding: 12, border: `1px solid ${C.border}`, marginBottom: 14 }}>
@@ -587,7 +587,7 @@ function DebtsPanel({ name, color, debts, setDebts, gross }) {
           </div>
         </div>
       )}
-
+ 
       {/* Debt list */}
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
         {debts.map(d => {
@@ -604,7 +604,7 @@ function DebtsPanel({ name, color, debts, setDebts, gross }) {
                 </div>
                 <Btn small color={C.red} onClick={() => setDebts(debts.filter(x => x.id !== d.id))}>✕</Btn>
               </div>
-
+ 
               <div style={{ display: "flex", gap: 16, fontSize: 12, marginBottom: 8, flexWrap: "wrap" }}>
                 <div>
                   <div style={{ color: C.dim, fontSize: 10 }}>剩餘欠款</div>
@@ -635,7 +635,7 @@ function DebtsPanel({ name, color, debts, setDebts, gross }) {
                   </div>
                 )}
               </div>
-
+ 
               {d.total > 0 && (
                 <>
                   <div style={{ background: C.border, borderRadius: 20, height: 5, marginBottom: 4 }}>
@@ -644,7 +644,7 @@ function DebtsPanel({ name, color, debts, setDebts, gross }) {
                   <div style={{ fontSize: 10, color: C.dim }}>已還清 {paidPct.toFixed(1)}%</div>
                 </>
               )}
-
+ 
               <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center" }}>
                 <span style={{ fontSize: 11, color: C.dim }}>更新剩餘欠款：</span>
                 <input type="number" defaultValue={d.remaining} key={d.remaining}
@@ -657,7 +657,7 @@ function DebtsPanel({ name, color, debts, setDebts, gross }) {
         })}
         {debts.length === 0 && <div style={{ color: C.dim, fontSize: 13 }}>尚無負債紀錄</div>}
       </div>
-
+ 
       {!showForm ? (
         <Btn color={C.red} full onClick={() => setShowForm(true)}>＋ 新增負債</Btn>
       ) : (
@@ -685,7 +685,7 @@ function DebtsPanel({ name, color, debts, setDebts, gross }) {
     </Card>
   );
 }
-
+ 
 // ─── Shared Account Panel ────────────────────────────────────────────────────
 // Covers: cash balance, rental income, shared monthly bills
 function SharedAccountPanel({ shared, setShared }) {
@@ -693,31 +693,31 @@ function SharedAccountPanel({ shared, setShared }) {
   const cashBalance = shared.cashBalance ?? 0;
   const rentItems = shared.rentIncome || [];
   const bills = shared.bills || [];
-
+ 
   // ── cash balance inline edit ──
   const [editingCash, setEditingCash] = useState(false);
   const [cashDraft, setCashDraft] = useState("");
-
+ 
   // ── rent income form ──
   const [showRentForm, setShowRentForm] = useState(false);
   const [rLabel, setRLabel] = useState("");
   const [rAmount, setRAmount] = useState("");
   const [rNote, setRNote] = useState("");
   const [rEditId, setREditId] = useState(null);
-
+ 
   // ── bill form ──
   const [month, setMonth] = useState(now());
   const [billAmt, setBillAmt] = useState("");
   const [billNote, setBillNote] = useState("");
   const [billEditId, setBillEditId] = useState(null);
-
+ 
   const saveCash = () => {
     setShared({ ...shared, cashBalance: +cashDraft || 0 });
     setEditingCash(false);
   };
-
+ 
   const totalRent = rentItems.reduce((s, r) => s + (r.amount || 0), 0);
-
+ 
   const addRent = () => {
     if (!rLabel || !rAmount) return;
     const updated = rEditId
@@ -728,7 +728,7 @@ function SharedAccountPanel({ shared, setShared }) {
   };
   const startRentEdit = (r) => { setREditId(r.id); setRLabel(r.label); setRAmount(String(r.amount)); setRNote(r.note||""); setShowRentForm(true); };
   const delRent = (id) => setShared({ ...shared, rentIncome: rentItems.filter(r => r.id !== id) });
-
+ 
   const addBill = () => {
     if (!billAmt) return;
     const updated = billEditId
@@ -739,7 +739,7 @@ function SharedAccountPanel({ shared, setShared }) {
   };
   const startBillEdit = (b) => { setBillEditId(b.id); setMonth(b.month); setBillAmt(String(b.amount)); setBillNote(b.note||""); };
   const delBill = (id) => setShared({ ...shared, bills: bills.filter(b => b.id !== id) });
-
+ 
   const sortedBills = [...bills].sort((a,b) => b.month.localeCompare(a.month));
   const thisMonthBill = bills.filter(b => b.month === now()).reduce((s,b) => s + b.amount, 0);
   const thisY = String(new Date().getFullYear());
@@ -747,13 +747,13 @@ function SharedAccountPanel({ shared, setShared }) {
   const monthAvg = bills.length ? bills.reduce((s,b) => s+b.amount, 0) / bills.length : 0;
   const last6 = sortedBills.slice(0,6).reverse();
   const maxB = Math.max(...last6.map(b => b.amount), 1);
-
+ 
   // monthly cashflow of shared account
   const monthlyNet = totalRent - thisMonthBill;
-
+ 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
+ 
       {/* ── Top summary: cash + monthly cashflow ── */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
         {/* Cash balance card */}
@@ -772,7 +772,7 @@ function SharedAccountPanel({ shared, setShared }) {
             </div>
           )}
         </Card>
-
+ 
         {/* Rent income card */}
         <Card accent={C.p2}>
           <div style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>🏠 每月租金收入</div>
@@ -803,7 +803,7 @@ function SharedAccountPanel({ shared, setShared }) {
             </div>
           )}
         </Card>
-
+ 
         {/* Monthly cashflow card */}
         <Card accent={monthlyNet >= 0 ? C.p1 : C.red}>
           <div style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>📊 本月共同結餘</div>
@@ -816,7 +816,7 @@ function SharedAccountPanel({ shared, setShared }) {
           </div>
         </Card>
       </div>
-
+ 
       {/* ── Bill section ── */}
       <Card accent={C.gold}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
@@ -830,7 +830,7 @@ function SharedAccountPanel({ shared, setShared }) {
             <div style={{ fontSize: 11, color: C.dim }}>月均 NT$ {fmt(monthAvg)}</div>
           </div>
         </div>
-
+ 
         {last6.length > 0 && (
           <div style={{ display: "flex", gap: 6, alignItems: "flex-end", height: 56, marginBottom: 14 }}>
             {last6.map(b => (
@@ -843,7 +843,7 @@ function SharedAccountPanel({ shared, setShared }) {
             ))}
           </div>
         )}
-
+ 
         <div style={{ background: C.surface, borderRadius: 8, padding: 12, border: `1px solid ${C.border}`, marginBottom: 12 }}>
           <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
             {billEditId ? "編輯帳單" : "輸入月帳單"}
@@ -856,7 +856,7 @@ function SharedAccountPanel({ shared, setShared }) {
           </div>
           {billEditId && <Btn small color={C.dim} onClick={() => { setBillEditId(null); setBillAmt(""); setBillNote(""); }} style={{ marginTop: 7 }}>取消編輯</Btn>}
         </div>
-
+ 
         <div style={{ maxHeight: 260, overflowY: "auto" }}>
           {sortedBills.length === 0 && <div style={{ color: C.dim, fontSize: 13, textAlign: "center", padding: "16px 0" }}>尚無帳單紀錄</div>}
           {sortedBills.map(b => (
@@ -878,7 +878,7 @@ function SharedAccountPanel({ shared, setShared }) {
     </div>
   );
 }
-
+ 
 // ─── Goals Panel ──────────────────────────────────────────────────────────────
 function GoalsPanel({ goals, setGoals }) {
   const [showForm, setShowForm] = useState(false);
@@ -886,15 +886,15 @@ function GoalsPanel({ goals, setGoals }) {
   const [gtarget, setGtarget] = useState("");
   const [gdeadline, setGdeadline] = useState("");
   const [gcurrent, setGcurrent] = useState("");
-
+ 
   const add = () => {
     if (!gname || !gtarget) return;
     setGoals([...goals, { id: Date.now(), name: gname, target: +gtarget, deadline: gdeadline, current: +gcurrent || 0 }]);
     setGname(""); setGtarget(""); setGdeadline(""); setGcurrent(""); setShowForm(false);
   };
-
+ 
   const updateCurrent = (id, v) => setGoals(goals.map(g => g.id === id ? { ...g, current: +v || 0 } : g));
-
+ 
   return (
     <Card accent={C.p2}>
       <div style={{ marginBottom: 16 }}>
@@ -964,8 +964,8 @@ function GoalsPanel({ goals, setGoals }) {
     </Card>
   );
 }
-
-
+ 
+ 
 // ─── Cashflow Panel ───────────────────────────────────────────────────────────
 // Each person sets their monthly income + custom expense line items for partner visibility
 function CashflowPanel({ name, color, cashflow, setCashflow }) {
@@ -982,14 +982,14 @@ function CashflowPanel({ name, color, cashflow, setCashflow }) {
   const [eNote, setENote] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editType, setEditType] = useState(null); // "income" | "expense"
-
+ 
   const income = cashflow.income || [];
   const expenses = cashflow.expenses || [];
   const totalIncome = income.reduce((s, x) => s + (x.amount || 0), 0);
   const totalExpenses = expenses.reduce((s, x) => s + (x.amount || 0), 0);
   const surplus = totalIncome - totalExpenses;
   const savingsRate = totalIncome > 0 ? (surplus / totalIncome) * 100 : null;
-
+ 
   const addIncome = () => {
     if (!iLabel || !iAmount) return;
     if (editingId && editType === "income") {
@@ -1000,7 +1000,7 @@ function CashflowPanel({ name, color, cashflow, setCashflow }) {
     }
     setILabel(""); setIAmount(""); setINote(""); setShowIncForm(false);
   };
-
+ 
   const addExpense = () => {
     if (!eLabel || !eAmount) return;
     if (editingId && editType === "expense") {
@@ -1011,20 +1011,20 @@ function CashflowPanel({ name, color, cashflow, setCashflow }) {
     }
     setELabel(""); setEAmount(""); setENote(""); setShowExpForm(false);
   };
-
+ 
   const startEdit = (item, type) => {
     setEditingId(item.id); setEditType(type);
     if (type === "income") { setILabel(item.label); setIAmount(String(item.amount)); setINote(item.note || ""); setShowIncForm(true); }
     else { setELabel(item.label); setEAmount(String(item.amount)); setENote(item.note || ""); setShowExpForm(true); }
   };
-
+ 
   const cancelEdit = () => { setEditingId(null); setEditType(null); setShowIncForm(false); setShowExpForm(false); setILabel(""); setIAmount(""); setINote(""); setELabel(""); setEAmount(""); setENote(""); };
-
+ 
   const delIncome = (id) => setCashflow({ ...cashflow, income: income.filter(x => x.id !== id) });
   const delExpense = (id) => setCashflow({ ...cashflow, expenses: expenses.filter(x => x.id !== id) });
-
+ 
   const barMax = Math.max(totalIncome, totalExpenses, 1);
-
+ 
   return (
     <Card accent={color + "88"}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
@@ -1044,7 +1044,7 @@ function CashflowPanel({ name, color, cashflow, setCashflow }) {
           )}
         </div>
       </div>
-
+ 
       {/* Visual bar comparison */}
       {(totalIncome > 0 || totalExpenses > 0) && (
         <div style={{ marginBottom: 16, background: C.surface, borderRadius: 8, padding: 12, border: `1px solid ${C.border}` }}>
@@ -1070,7 +1070,7 @@ function CashflowPanel({ name, color, cashflow, setCashflow }) {
           </div>
         </div>
       )}
-
+ 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         {/* ── Income Column ── */}
         <div>
@@ -1109,7 +1109,7 @@ function CashflowPanel({ name, color, cashflow, setCashflow }) {
             </div>
           )}
         </div>
-
+ 
         {/* ── Expense Column ── */}
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -1152,14 +1152,14 @@ function CashflowPanel({ name, color, cashflow, setCashflow }) {
     </Card>
   );
 }
-
+ 
 // ─── Overview ─────────────────────────────────────────────────────────────────
 function Overview({ p1Name, p2Name, p1NW, p2NW, p1Gross, p2Gross, p1Debt, p2Debt, monthBill, goals, bills, p1Cash, p2Cash, sharedCash, sharedRent, thisMonthBill: thisMonthBillProp, usdRate }) {
   const total = p1NW + p2NW + sharedCash;
   const thisY = String(new Date().getFullYear());
   const yearBills = bills.filter(b => b.month.startsWith(thisY));
   const yearTotal = yearBills.reduce((s, b) => s + b.amount, 0);
-
+ 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       {/* Top stats */}
@@ -1193,7 +1193,7 @@ function Overview({ p1Name, p2Name, p1NW, p2NW, p1Gross, p2Gross, p1Debt, p2Debt
           {(p1Debt + p2Debt) > 0 && <div style={{ fontSize: 10, color: C.red, marginTop: 4 }}>負債合計 {fmt(p1Debt + p2Debt)}</div>}
         </Card>
       </div>
-
+ 
       {/* Wealth comparison bar */}
       <Card>
         <div style={{ fontSize: 12, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 14 }}>
@@ -1230,7 +1230,7 @@ function Overview({ p1Name, p2Name, p1NW, p2NW, p1Gross, p2Gross, p1Debt, p2Debt
           ))}
         </div>
       </Card>
-
+ 
       {/* Cashflow comparison */}
       {(p1Cash.income?.length > 0 || p2Cash.income?.length > 0 || p1Cash.expenses?.length > 0 || p2Cash.expenses?.length > 0) && (() => {
         const p1Inc = (p1Cash.income || []).reduce((s, x) => s + (x.amount || 0), 0);
@@ -1316,7 +1316,7 @@ function Overview({ p1Name, p2Name, p1NW, p2NW, p1Gross, p2Gross, p1Debt, p2Debt
           </Card>
         );
       })()}
-
+ 
       {/* Goals */}
       {goals.length > 0 && (
         <Card>
@@ -1340,7 +1340,7 @@ function Overview({ p1Name, p2Name, p1NW, p2NW, p1Gross, p2Gross, p1Debt, p2Debt
           </div>
         </Card>
       )}
-
+ 
       {/* Yearly spending */}
       {yearBills.length > 0 && (
         <Card>
@@ -1365,7 +1365,7 @@ function Overview({ p1Name, p2Name, p1NW, p2NW, p1Gross, p2Gross, p1Debt, p2Debt
     </div>
   );
 }
-
+ 
 // ─── App ─────────────────────────────────────────────────────────────────────
 function App() {
   const [p1Name, setP1Name] = useStorage("ff2_p1name", "Lois");
@@ -1384,9 +1384,9 @@ function App() {
   const [p2Cash, setP2Cash] = useStorage("ff2_p2cash", { income: [], expenses: [] });
   const [tab, setTab] = useState("overview");
   const [editName, setEditName] = useState(false);
-
+ 
   const calcGross = (stocks, assets, usdRate = 32) => {
-    const sv = stocks.reduce((s, x) => s + (x.livePrice || x.avgCost) * x.shares, 0);
+    const sv = stocks.reduce((s, x) => s + (x.livePrice || 0) * x.shares, 0);
     const av = assets.reduce((s, a) => {
       if (a.currency === "USD") return s + (a.usdAmount || 0) * usdRate;
       return s + (a.value || 0);
@@ -1408,7 +1408,7 @@ function App() {
   const sharedRent = (shared.rentIncome || []).reduce((s,r) => s + (r.amount||0), 0);
   const thisMonthBill = sharedBills.filter(b => b.month === now()).reduce((s, b) => s + b.amount, 0);
   const sharedCash = shared.cashBalance || 0;
-
+ 
   const tabs = [
     { id: "overview", label: "總覽" },
     { id: "p1", label: p1Name, color: C.p1 },
@@ -1416,11 +1416,11 @@ function App() {
     { id: "bills", label: "共同支出", color: C.gold },
     { id: "goals", label: "目標", color: C.p2 },
   ];
-
+ 
   return (
     <div style={{ background: C.bg, minHeight: "100vh", color: C.text,
       fontFamily: "'Noto Sans TC', 'PingFang TC', 'Helvetica Neue', sans-serif", paddingBottom: 60 }}>
-
+ 
       {/* Header */}
       <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "18px 28px 0", position: "sticky", top: 0, zIndex: 20 }}>
         <div style={{ maxWidth: 1120, margin: "0 auto" }}>
@@ -1452,7 +1452,7 @@ function App() {
               </div>
             </div>
           </div>
-
+ 
           {/* Tabs */}
           <div style={{ display: "flex", gap: 2 }}>
             {tabs.map(t => (
@@ -1467,38 +1467,39 @@ function App() {
           </div>
         </div>
       </div>
-
+ 
       {/* Content */}
       <div style={{ maxWidth: 1120, margin: "24px auto", padding: "0 28px" }}>
         {tab === "overview" && <Overview p1Name={p1Name} p2Name={p2Name} p1NW={p1NW} p2NW={p2NW} p1Gross={p1Gross} p2Gross={p2Gross} p1Debt={p1TotalDebt} p2Debt={p2TotalDebt} monthBill={thisMonthBill} goals={goals} bills={sharedBills} p1Cash={p1Cash} p2Cash={p2Cash} sharedCash={sharedCash} sharedRent={sharedRent} thisMonthBill={thisMonthBill} usdRate={usdRateApp} />}
-
+ 
         {tab === "p1" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <CashflowPanel name={p1Name} color={C.p1} cashflow={p1Cash} setCashflow={setP1Cash} />
-            <StockPanel name={p1Name} color={C.p1} stocks={p1Stocks} setStocks={setP1Stocks} trades={p1Trades} setTrades={setP1Trades} />
+            <StockPanel name={p1Name} color={C.p1} stocks={p1Stocks} setStocks={setP1Stocks} />
             <AssetsPanel name={p1Name} color={C.p1} assets={p1Assets} setAssets={setP1Assets} usdRate={usdRateApp} />
             <DebtsPanel name={p1Name} color={C.p1} debts={p1Debts} setDebts={setP1Debts} gross={p1Gross} />
           </div>
         )}
-
+ 
         {tab === "p2" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <CashflowPanel name={p2Name} color={C.p2} cashflow={p2Cash} setCashflow={setP2Cash} />
-            <StockPanel name={p2Name} color={C.p2} stocks={p2Stocks} setStocks={setP2Stocks} trades={p2Trades} setTrades={setP2Trades} />
+            <StockPanel name={p2Name} color={C.p2} stocks={p2Stocks} setStocks={setP2Stocks} />
             <AssetsPanel name={p2Name} color={C.p2} assets={p2Assets} setAssets={setP2Assets} usdRate={usdRateApp} />
             <DebtsPanel name={p2Name} color={C.p2} debts={p2Debts} setDebts={setP2Debts} gross={p2Gross} />
           </div>
         )}
-
+ 
         {tab === "bills" && <SharedAccountPanel shared={shared} setShared={setShared} />}
         {tab === "goals" && <GoalsPanel goals={goals} setGoals={setGoals} />}
       </div>
     </div>
   );
 }
-
-
-    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+ 
+ 
+    ReactDOM.createRoot(document.getElementById("root")).render(<PasswordGate><App /></PasswordGate>);
   </script>
+ 
 </body>
 </html>
