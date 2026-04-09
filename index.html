@@ -258,8 +258,6 @@ function StockPanel({ name, color, stocks, setStocks, usdRate = 32 }) {
     setFetching(f => ({ ...f, [s.id]: true }));
     const r = await fetchPrice(s.ticker, s.market);
     if (r) {
-      // For US stocks, also store the TWD equivalent using current rate
-      // so calcGross in App uses the same rate as the display
       const rate = usdRate || 32;
       setStocks(prev => prev.map(x => x.id === s.id
         ? { ...x, livePrice: r.price, liveChange: r.change, liveTs: Date.now(),
@@ -272,8 +270,28 @@ function StockPanel({ name, color, stocks, setStocks, usdRate = 32 }) {
 
   const refreshAll = async () => {
     setFetchingAll(true);
-    // Parallel fetch — all stocks at once instead of sequential
-    await Promise.all(stocks.map(s => refreshPrice(s)));
+    const rate = usdRate || 32;
+    // Fetch all in parallel, then apply ALL results in ONE setStocks call
+    // (prevents parallel setState calls from overwriting each other)
+    const results = await Promise.all(
+      stocks.map(async s => {
+        setFetching(f => ({ ...f, [s.id]: true }));
+        const r = await fetchPrice(s.ticker, s.market);
+        setFetching(f => ({ ...f, [s.id]: false }));
+        if (!r) return null;
+        return {
+          id: s.id,
+          livePrice: r.price,
+          liveChange: r.change,
+          liveTs: Date.now(),
+          livePriceTWD: s.market === "US" ? r.price * rate : r.price,
+        };
+      })
+    );
+    setStocks(prev => prev.map(s => {
+      const upd = results.find(r => r && r.id === s.id);
+      return upd ? { ...s, ...upd } : s;
+    }));
     setFetchingAll(false);
   };
 
