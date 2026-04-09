@@ -41,7 +41,6 @@
       messagingSenderId: "277505966876",
       appId: "1:277505966876:web:d72aa53ca998d9f5a1f0d9",
     };
-
     const FAMILY_DOC_ID = "lois-lisa";
 
     let db = null;
@@ -156,53 +155,50 @@ const fmtUSD = (n) => n == null || isNaN(n) ? "—" : "$" + Number(n).toLocaleSt
 const pct = (n) => { if (n == null) return "—"; return (n > 0 ? "+" : "") + Number(n).toFixed(2) + "%"; };
 const now = () => new Date().toISOString().slice(0, 7);
 
-// ─── Stock price fetcher — multi-source fallback ─────────────────────────────
+// ─── Stock price fetcher — race multiple proxies simultaneously ───────────────
 async function fetchPrice(ticker, market) {
   const symbol = market === "TW" ? ticker + ".TW" : ticker;
 
-  // Source 1: Yahoo Finance via corsproxy.io
-  const tryYahoo = async (proxyBase) => {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-    const res = await fetch(proxyBase + encodeURIComponent(url), { signal: AbortSignal.timeout(8000) });
+  const tryProxy = async (proxyBase, url) => {
+    const res = await fetch(proxyBase + encodeURIComponent(url), { signal: AbortSignal.timeout(10000) });
     const json = await res.json();
     const raw = typeof json.contents === "string" ? JSON.parse(json.contents) : json;
     const meta = raw?.chart?.result?.[0]?.meta;
-    if (!meta?.regularMarketPrice) return null;
+    if (!meta?.regularMarketPrice) throw new Error("no price");
     return { price: meta.regularMarketPrice, prev: meta.chartPreviousClose,
       change: meta.chartPreviousClose ? ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100 : null };
   };
 
-  // Source 2: Yahoo Finance v7 (different endpoint, sometimes less blocked)
-  const tryYahooV7 = async () => {
+  const tryV7 = async (proxyBase) => {
     const url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`;
-    const proxied = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-    const res = await fetch(proxied, { signal: AbortSignal.timeout(8000) });
+    const res = await fetch(proxyBase + encodeURIComponent(url), { signal: AbortSignal.timeout(10000) });
     const json = await res.json();
-    const q = json?.quoteResponse?.result?.[0];
-    if (!q?.regularMarketPrice) return null;
+    const raw = typeof json.contents === "string" ? JSON.parse(json.contents) : json;
+    const q = raw?.quoteResponse?.result?.[0];
+    if (!q?.regularMarketPrice) throw new Error("no price");
     return { price: q.regularMarketPrice, prev: q.regularMarketPreviousClose,
       change: q.regularMarketChangePercent ?? null };
   };
 
+  const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
   const proxies = [
     "https://corsproxy.io/?",
     "https://api.allorigins.win/get?url=",
     "https://api.codetabs.com/v1/proxy?quest=",
   ];
 
-  for (const proxy of proxies) {
-    try {
-      const result = await tryYahoo(proxy);
-      if (result) return result;
-    } catch {}
-  }
+  // Race all proxies simultaneously — use whichever responds first
+  const attempts = [
+    ...proxies.map(p => tryProxy(p, chartUrl)),
+    ...proxies.slice(0,2).map(p => tryV7(p)),
+  ];
 
   try {
-    const result = await tryYahooV7();
-    if (result) return result;
-  } catch {}
-
-  return null;
+    // Promise.any returns first successful result
+    return await Promise.any(attempts);
+  } catch {
+    return null;
+  }
 }
 
 // ─── Primitive UI ─────────────────────────────────────────────────────────────
@@ -276,7 +272,8 @@ function StockPanel({ name, color, stocks, setStocks, usdRate = 32 }) {
 
   const refreshAll = async () => {
     setFetchingAll(true);
-    for (const s of stocks) await refreshPrice(s);
+    // Parallel fetch — all stocks at once instead of sequential
+    await Promise.all(stocks.map(s => refreshPrice(s)));
     setFetchingAll(false);
   };
 
@@ -1748,10 +1745,21 @@ function App() {
     return sv + av + cv;
   };
   const [usdRateApp, setUsdRateApp] = useStorage("ff2_usdrate", 32);
+  const [usdRateTs, setUsdRateTs] = useStorage("ff2_usdrate_ts", null);
+  const [usdFetching, setUsdFetching] = useState(false);
+
+  const refreshUsdRate = async () => {
+    setUsdFetching(true);
+    const r = await fetchPrice("USDTWD=X","US");
+    if (r?.price) {
+      setUsdRateApp(Math.round(r.price * 100) / 100);
+      setUsdRateTs(Date.now());
+    }
+    setUsdFetching(false);
+  };
+
   // refresh USD/TWD rate on mount
-  useEffect(() => {
-    fetchPrice("USDTWD=X","US").then(r => { if (r?.price) setUsdRateApp(Math.round(r.price * 100)/100); });
-  }, []);
+  useEffect(() => { refreshUsdRate(); }, []);
   const p1Gross = calcGross(p1Stocks, p1Assets, usdRateApp, p1Crypto);
   const p2Gross = calcGross(p2Stocks, p2Assets, usdRateApp, p2Crypto);
   const p1TotalDebt = p1Debts.reduce((s, d) => s + (d.remaining || 0), 0);
@@ -1804,6 +1812,22 @@ function App() {
               <div style={{ fontSize: 10, color: C.dim, marginBottom: 3 }}>家庭總淨資產</div>
               <div style={{ fontSize: 28, fontWeight: 900, color: C.text, letterSpacing: -1 }}>
                 NT$ {fmt(p1NW + p2NW + sharedCash)}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end", marginTop: 4 }}>
+                <span style={{ fontSize: 10, color: usdFetching ? C.gold : C.dim }}>
+                  USD/TWD {usdFetching ? "更新中…" : `≈ ${usdRateApp}`}
+                  {usdRateTs && !usdFetching && (() => {
+                    const mins = Math.round((Date.now() - usdRateTs) / 60000);
+                    const hours = Math.floor(mins / 60);
+                    const label = hours >= 1 ? `${hours}小時前` : mins <= 1 ? "剛更新" : `${mins}分前`;
+                    return <span style={{ color: mins > 60 ? C.red : C.dim }}> · {label}</span>;
+                  })()}
+                </span>
+                <button onClick={refreshUsdRate} disabled={usdFetching}
+                  style={{ background: "transparent", border: `1px solid ${C.dimmer}`, borderRadius: 4,
+                    color: usdFetching ? C.dimmer : C.dim, fontSize: 10, padding: "2px 7px", cursor: "pointer" }}>
+                  ↻
+                </button>
               </div>
             </div>
           </div>
