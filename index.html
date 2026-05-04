@@ -27,7 +27,6 @@
 </head>
 <body>
   <div id="root"></div>
-
   <script type="text/babel">
     const { useState, useEffect, useCallback, useRef } = React;
 
@@ -156,34 +155,24 @@ const pct = (n) => { if (n == null) return "—"; return (n > 0 ? "+" : "") + Nu
 const now = () => new Date().toISOString().slice(0, 7);
 
 // ─── Stock price fetcher — race multiple proxies simultaneously ───────────────
+// ─── Stock price fetcher via Cloudflare Worker ────────────────────────────────
+// 👇 部署 Worker 後把你的 Worker 網址貼在這裡
+const WORKER_URL = "https://stock-price-proxy.yiting3331.workers.dev";
+
 async function fetchPrice(ticker, market) {
-  const symbol = market === "TW" ? ticker + ".TW" : ticker;
-
-  const parseYahooChart = (raw) => {
-    const meta = raw?.chart?.result?.[0]?.meta;
-    if (!meta?.regularMarketPrice) throw new Error("no price");
-    return { price: meta.regularMarketPrice, prev: meta.chartPreviousClose,
-      change: meta.chartPreviousClose ? ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100 : null };
-  };
-
-  const chartUrl1 = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-  const chartUrl2 = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-
-  const attempts = [
-    // thingproxy — reliable free proxy
-    async () => { const r = await fetch(`https://thingproxy.freeboard.io/fetch/${chartUrl1}`, { signal: AbortSignal.timeout(10000) }); return parseYahooChart(await r.json()); },
-    // codetabs
-    async () => { const r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(chartUrl1)}`, { signal: AbortSignal.timeout(10000) }); return parseYahooChart(await r.json()); },
-    // allorigins raw (no wrapper)
-    async () => { const r = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(chartUrl2)}`, { signal: AbortSignal.timeout(10000) }); return parseYahooChart(await r.json()); },
-    // corsproxy new url format
-    async () => { const r = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(chartUrl1)}`, { signal: AbortSignal.timeout(10000) }); return parseYahooChart(await r.json()); },
-    // jsonp.afeld.me
-    async () => { const r = await fetch(`https://jsonp.afeld.me/?url=${encodeURIComponent(chartUrl2)}`, { signal: AbortSignal.timeout(10000) }); return parseYahooChart(await r.json()); },
-  ];
-
   try {
-    return await Promise.any(attempts.map(fn => fn()));
+    const res = await fetch(
+      `${WORKER_URL}/?ticker=${encodeURIComponent(ticker)}&market=${encodeURIComponent(market)}`,
+      { signal: AbortSignal.timeout(12000) }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.price) return null;
+    return {
+      price: data.price,
+      prev: data.prev,
+      change: data.change,
+    };
   } catch {
     return null;
   }
