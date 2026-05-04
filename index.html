@@ -27,6 +27,7 @@
 </head>
 <body>
   <div id="root"></div>
+
   <script type="text/babel">
     const { useState, useEffect, useCallback, useRef } = React;
 
@@ -39,6 +40,7 @@
       storageBucket: "lois-lisa-finance.firebasestorage.app",
       messagingSenderId: "277505966876",
       appId: "1:277505966876:web:d72aa53ca998d9f5a1f0d9",
+
     };
     const FAMILY_DOC_ID = "lois-lisa";
 
@@ -459,45 +461,41 @@ function AssetsPanel({ name, color, assets, setAssets, usdRate = 32, crypto, set
     setBtcFetching(true);
     let price = null;
 
-    // Source 1: CoinGecko (no API key needed, most reliable for crypto)
-    const coingeckoUrl = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd";
-    const proxies = [
-      "https://corsproxy.io/?",
-      "https://api.allorigins.win/get?url=",
-      "https://api.codetabs.com/v1/proxy?quest=",
-    ];
+    // Use our Cloudflare Worker — same as stocks
+    try {
+      const res = await fetch(
+        `${WORKER_URL}/?ticker=BTC-USD&market=US`,
+        { signal: AbortSignal.timeout(12000) }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data.price) price = data.price;
+      }
+    } catch {}
 
-    for (const proxy of proxies) {
-      if (price) break;
+    // Fallback: CoinGecko direct (sometimes works without proxy)
+    if (!price) {
       try {
-        const res = await fetch(proxy + encodeURIComponent(coingeckoUrl), { signal: AbortSignal.timeout(8000) });
-        const json = await res.json();
-        // allorigins wraps in .contents, others return directly
-        const data = json.contents ? JSON.parse(json.contents) : json;
-        const p = data?.bitcoin?.usd;
-        if (p && +p > 0) { price = +p; break; }
+        const res = await fetch(
+          "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
+          { signal: AbortSignal.timeout(10000) }
+        );
+        const data = await res.json();
+        if (data?.bitcoin?.usd) price = data.bitcoin.usd;
       } catch {}
     }
 
-    // Source 2: Yahoo Finance BTC-USD as final fallback
-    if (!price) {
-      for (const proxy of proxies) {
-        try {
-          const url = "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?interval=1d&range=1d";
-          const res = await fetch(proxy + encodeURIComponent(url), { signal: AbortSignal.timeout(8000) });
-          const json = await res.json();
-          const data = json.contents ? JSON.parse(json.contents) : json;
-          const p = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-          if (p && +p > 0) { price = +p; break; }
-        } catch {}
-      }
-    }
-
     if (price) {
-      setCrypto(btcList.map(b => ({ ...b, priceUSD: price, valueTWD: Math.round(b.amount * price * usdRate), liveTs: Date.now() })));
+      setCrypto(btcList.map(b => ({
+        ...b,
+        priceUSD: price,
+        valueTWD: Math.round(b.amount * price * usdRate),
+        liveTs: Date.now()
+      })));
     }
     setBtcFetching(false);
   };
+
 
   const addBTC = () => {
     const amt = prompt("持有 BTC 數量（例如：0.5）");
