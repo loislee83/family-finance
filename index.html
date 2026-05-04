@@ -34,7 +34,7 @@
     // ── Firebase setup (compat mode — works as global) ─────────────────────
     // 👇 填入你的 Firebase 設定碼（從 Firebase Console 複製）
     const FIREBASE_CONFIG = {
-      apiKey: "AIzaSyC64gtkUHlvE-GJlNz0fowOcPO50gffZGo",
+      aapiKey: "AIzaSyC64gtkUHlvE-GJlNz0fowOcPO50gffZGo",
       authDomain: "lois-lisa-finance.firebaseapp.com",
       projectId: "lois-lisa-finance",
       storageBucket: "lois-lisa-finance.firebasestorage.app",
@@ -159,48 +159,35 @@ const now = () => new Date().toISOString().slice(0, 7);
 async function fetchPrice(ticker, market) {
   const symbol = market === "TW" ? ticker + ".TW" : ticker;
 
-  const tryProxy = async (proxyBase, url) => {
-    const res = await fetch(proxyBase + encodeURIComponent(url), { signal: AbortSignal.timeout(10000) });
-    const json = await res.json();
-    const raw = typeof json.contents === "string" ? JSON.parse(json.contents) : json;
+  const parseYahooChart = (raw) => {
     const meta = raw?.chart?.result?.[0]?.meta;
     if (!meta?.regularMarketPrice) throw new Error("no price");
     return { price: meta.regularMarketPrice, prev: meta.chartPreviousClose,
       change: meta.chartPreviousClose ? ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100 : null };
   };
 
-  const tryV7 = async (proxyBase) => {
-    const url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`;
-    const res = await fetch(proxyBase + encodeURIComponent(url), { signal: AbortSignal.timeout(10000) });
-    const json = await res.json();
-    const raw = typeof json.contents === "string" ? JSON.parse(json.contents) : json;
-    const q = raw?.quoteResponse?.result?.[0];
-    if (!q?.regularMarketPrice) throw new Error("no price");
-    return { price: q.regularMarketPrice, prev: q.regularMarketPreviousClose,
-      change: q.regularMarketChangePercent ?? null };
-  };
+  const chartUrl1 = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+  const chartUrl2 = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
 
-  const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-  const proxies = [
-    "https://corsproxy.io/?",
-    "https://api.allorigins.win/get?url=",
-    "https://api.codetabs.com/v1/proxy?quest=",
-  ];
-
-  // Race all proxies simultaneously — use whichever responds first
   const attempts = [
-    ...proxies.map(p => tryProxy(p, chartUrl)),
-    ...proxies.slice(0,2).map(p => tryV7(p)),
+    // thingproxy — reliable free proxy
+    async () => { const r = await fetch(`https://thingproxy.freeboard.io/fetch/${chartUrl1}`, { signal: AbortSignal.timeout(10000) }); return parseYahooChart(await r.json()); },
+    // codetabs
+    async () => { const r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(chartUrl1)}`, { signal: AbortSignal.timeout(10000) }); return parseYahooChart(await r.json()); },
+    // allorigins raw (no wrapper)
+    async () => { const r = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(chartUrl2)}`, { signal: AbortSignal.timeout(10000) }); return parseYahooChart(await r.json()); },
+    // corsproxy new url format
+    async () => { const r = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(chartUrl1)}`, { signal: AbortSignal.timeout(10000) }); return parseYahooChart(await r.json()); },
+    // jsonp.afeld.me
+    async () => { const r = await fetch(`https://jsonp.afeld.me/?url=${encodeURIComponent(chartUrl2)}`, { signal: AbortSignal.timeout(10000) }); return parseYahooChart(await r.json()); },
   ];
 
   try {
-    // Promise.any returns first successful result
-    return await Promise.any(attempts);
+    return await Promise.any(attempts.map(fn => fn()));
   } catch {
     return null;
   }
 }
-
 // ─── Primitive UI ─────────────────────────────────────────────────────────────
 const Inp = ({ value, onChange, placeholder, type = "text", style = {}, small }) => (
   <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
