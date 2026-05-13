@@ -34,7 +34,7 @@
     // ── Firebase setup (compat mode — works as global) ─────────────────────
     // 👇 填入你的 Firebase 設定碼（從 Firebase Console 複製）
     const FIREBASE_CONFIG = {
-      aapiKey: "AIzaSyC64gtkUHlvE-GJlNz0fowOcPO50gffZGo",
+      apiKey: "AIzaSyC64gtkUHlvE-GJlNz0fowOcPO50gffZGo",
       authDomain: "lois-lisa-finance.firebaseapp.com",
       projectId: "lois-lisa-finance",
       storageBucket: "lois-lisa-finance.firebasestorage.app",
@@ -50,40 +50,80 @@
       db = firebase.firestore();
     } catch(e) { console.warn("Firebase init failed", e); }
 
-    // ── Storage Hook ────────────────────────────────────────────────────────
+    // ── Storage Hook：localStorage + Firebase 即時同步 ────────────────────────
     function useStorage(key, def) {
       const [val, setVal] = useState(() => {
-        try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : def; } catch { return def; }
+        try {
+          const s = localStorage.getItem(key);
+          return s ? JSON.parse(s) : def;
+        } catch {
+          return def;
+        }
       });
 
+      // 避免 save() 使用到舊的 state，造成不同裝置更新互相覆蓋
+      const valRef = useRef(val);
       useEffect(() => {
-        if (!db || !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey.startsWith("PASTE")) return;
-        const unsub = db.collection("family").doc(FAMILY_DOC_ID)
-          .onSnapshot((snap) => {
-            if (snap.exists) {
-              const data = snap.data();
-              if (data && data[key] !== undefined) {
-                try {
-                  const parsed = typeof data[key] === "string" ? JSON.parse(data[key]) : data[key];
-                  setVal(parsed);
-                  localStorage.setItem(key, JSON.stringify(parsed));
-                } catch(e) {}
-              }
+        valRef.current = val;
+      }, [val]);
+
+      // 從 Firebase 即時接收其他家庭成員的更新
+      useEffect(() => {
+        if (!db || !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey.startsWith("PASTE")) {
+          console.warn(`[${key}] Firebase not enabled, using localStorage only`);
+          return;
+        }
+
+        const ref = db.collection("family").doc(FAMILY_DOC_ID);
+
+        const unsub = ref.onSnapshot(
+          (snap) => {
+            if (!snap.exists) return;
+
+            const data = snap.data();
+            if (!data || data[key] === undefined) return;
+
+            try {
+              const parsed = typeof data[key] === "string" ? JSON.parse(data[key]) : data[key];
+              setVal(parsed);
+              valRef.current = parsed;
+              localStorage.setItem(key, JSON.stringify(parsed));
+            } catch (e) {
+              console.warn(`[${key}] Firebase parse error`, e);
             }
-          }, (err) => console.warn("Firebase read error", err));
+          },
+          (err) => console.warn(`[${key}] Firebase read error`, err)
+        );
+
         return unsub;
       }, [key]);
 
+      // 寫入本機 + Firebase，其他裝置會透過 onSnapshot 收到
       const save = useCallback((v) => {
-        const next = typeof v === "function" ? v(val) : v;
+        const next = typeof v === "function" ? v(valRef.current) : v;
+
         setVal(next);
-        try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
-        if (db && FIREBASE_CONFIG.apiKey && !FIREBASE_CONFIG.apiKey.startsWith("PASTE")) {
-          db.collection("family").doc(FAMILY_DOC_ID)
-            .set({ [key]: JSON.stringify(next) }, { merge: true })
-            .catch(e => console.warn("Firebase write error", e));
+        valRef.current = next;
+
+        try {
+          localStorage.setItem(key, JSON.stringify(next));
+        } catch {}
+
+        if (!db || !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey.startsWith("PASTE")) {
+          console.warn(`[${key}] Firebase not enabled, saved locally only`);
+          return;
         }
-      }, [key, val]);
+
+        db.collection("family").doc(FAMILY_DOC_ID)
+          .set(
+            {
+              [key]: next,
+              updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          )
+          .catch(e => console.warn(`[${key}] Firebase write error`, e));
+      }, [key]);
 
       return [val, save];
     }
