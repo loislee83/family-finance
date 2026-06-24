@@ -18,7 +18,7 @@
     input, select, button { font-family: inherit; }
   </style>
   <!-- Load React, ReactDOM, Babel synchronously before body -->
- <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js"></script>
   <!-- Firebase v9 compat (works as global scripts, no import needed) -->
@@ -27,6 +27,53 @@
 </head>
 <body>
   <div id="root"></div>
+
+  <script>
+    // 啟動錯誤顯示器：避免手機只看到黑畫面
+    function showStartupError(msg) {
+      var root = document.getElementById("root");
+      if (!root) return;
+      var safeMsg = String(msg == null ? "Unknown error" : msg).replace(/[<>&]/g, function(c) {
+        return { "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c];
+      });
+      root.innerHTML =
+        '<div style="min-height:100vh;background:#090b10;color:#e2e8f0;font-family:Arial, sans-serif;padding:24px;line-height:1.6;">' +
+        '<h2 style="color:#f87171;margin-bottom:12px;">網站啟動失敗</h2>' +
+        '<div style="color:#94a3b8;margin-bottom:12px;">請截圖這段錯誤訊息，或把文字複製給我。</div>' +
+        '<pre style="white-space:pre-wrap;background:#12151f;border:1px solid #334155;padding:12px;border-radius:8px;overflow:auto;">' +
+        safeMsg +
+        '</pre>' +
+        '<div style="color:#64748b;font-size:13px;margin-top:12px;">網址後面可加 ?v=20260624 重新整理，避免手機快取舊版。</div>' +
+        '</div>';
+    }
+
+    window.addEventListener("error", function(e) {
+      showStartupError(
+        "Error: " + e.message +
+        "\nFile: " + e.filename +
+        "\nLine: " + e.lineno +
+        "\nColumn: " + e.colno
+      );
+    });
+
+    window.addEventListener("unhandledrejection", function(e) {
+      var reason = e.reason;
+      showStartupError("Promise error: " + (reason && (reason.stack || reason.message) || reason));
+    });
+
+    setTimeout(function() {
+      var root = document.getElementById("root");
+      if (root && root.children.length === 0) {
+        showStartupError(
+          "React app did not start.\n\n" +
+          "React loaded: " + !!window.React + "\n" +
+          "ReactDOM loaded: " + !!window.ReactDOM + "\n" +
+          "Babel loaded: " + !!window.Babel + "\n" +
+          "Firebase loaded: " + !!window.firebase
+        );
+      }
+    }, 3000);
+  </script>
 
   <script type="text/babel">
     const { useState, useEffect, useCallback, useRef } = React;
@@ -46,16 +93,31 @@
 
     let db = null;
     try {
-      if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
-      db = firebase.firestore();
-    } catch(e) { console.warn("Firebase init failed", e); }
+      if (typeof firebase !== "undefined" && firebase.apps) {
+        if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+        if (firebase.firestore) db = firebase.firestore();
+      }
+    } catch(e) {
+      console.warn("Firebase init failed", e);
+    }
+
+    function normalizeStoredValue(value, def) {
+      if (value === undefined || value === null) return def;
+      if (Array.isArray(def)) return Array.isArray(value) ? value : def;
+      if (def && typeof def === "object" && !Array.isArray(def)) {
+        return (value && typeof value === "object" && !Array.isArray(value))
+          ? { ...def, ...value }
+          : def;
+      }
+      return value;
+    }
 
     // ── Storage Hook：localStorage + Firebase 即時同步 ────────────────────────
     function useStorage(key, def) {
       const [val, setVal] = useState(() => {
         try {
           const s = localStorage.getItem(key);
-          return s ? JSON.parse(s) : def;
+          return s ? normalizeStoredValue(JSON.parse(s), def) : def;
         } catch {
           return def;
         }
@@ -84,7 +146,8 @@
             if (!data || data[key] === undefined) return;
 
             try {
-              const parsed = typeof data[key] === "string" ? JSON.parse(data[key]) : data[key];
+              const parsedRaw = typeof data[key] === "string" ? JSON.parse(data[key]) : data[key];
+              const parsed = normalizeStoredValue(parsedRaw, def);
               setVal(parsed);
               valRef.current = parsed;
               localStorage.setItem(key, JSON.stringify(parsed));
@@ -100,7 +163,8 @@
 
       // 寫入本機 + Firebase，其他裝置會透過 onSnapshot 收到
       const save = useCallback((v) => {
-        const next = typeof v === "function" ? v(valRef.current) : v;
+        const rawNext = typeof v === "function" ? v(valRef.current) : v;
+        const next = normalizeStoredValue(rawNext, def);
 
         setVal(next);
         valRef.current = next;
@@ -114,15 +178,17 @@
           return;
         }
 
-        db.collection("family").doc(FAMILY_DOC_ID)
-          .set(
-            {
-              [key]: next,
-              updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-            },
-            { merge: true }
-          )
-          .catch(e => console.warn(`[${key}] Firebase write error`, e));
+        try {
+          const payload = { [key]: next };
+          if (typeof firebase !== "undefined" && firebase.firestore && firebase.firestore.FieldValue) {
+            payload.updatedAt = firebase.firestore.FieldValue.serverTimestamp();
+          }
+          db.collection("family").doc(FAMILY_DOC_ID)
+            .set(payload, { merge: true })
+            .catch(e => console.warn(`[${key}] Firebase write error`, e));
+        } catch (e) {
+          console.warn(`[${key}] Firebase write error`, e);
+        }
       }, [key]);
 
       return [val, save];
@@ -1909,7 +1975,13 @@ function App() {
 }
 
 
-    ReactDOM.createRoot(document.getElementById("root")).render(<PasswordGate><App /></PasswordGate>);
+    try {
+      ReactDOM.createRoot(document.getElementById("root")).render(
+        <PasswordGate><App /></PasswordGate>
+      );
+    } catch (e) {
+      showStartupError(e.stack || e.message || e);
+    }
   </script>
 </body>
 </html>
